@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>WinPE Deployment Tool</title>
+<HTA:APPLICATION
+    ID="WinPEDeploymentTool"
+    APPLICATIONNAME="WinPEDeploymentTool"
+    BORDER="thin"
+    BORDERSTYLE="normal"
+    CAPTION="yes"
+    CONTEXTMENU="no"
+    MAXIMIZEBUTTON="no"
+    MINIMIZEBUTTON="yes"
+    SCROLL="no"
+    SINGLEINSTANCE="yes"
+    SYSMENU="yes"
+    WINDOWSTATE="normal"
+>
+<meta http-equiv="X-UA-Compatible" content="IE=9">
+<style type="text/css">
+body {
+    margin: 0;
+    background: #f3f5f8;
+    color: #1f2933;
+    font-family: Segoe UI, Arial, sans-serif;
+    font-size: 13px;
+}
+.wrap {
+    width: 760px;
+    margin: 0 auto;
+    padding: 18px;
+}
+.header {
+    border-bottom: 1px solid #c7d0da;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+}
+h1 {
+    margin: 0 0 4px 0;
+    font-size: 22px;
+    font-weight: 600;
+}
+.subtle {
+    color: #52616f;
+}
+.panel {
+    background: #ffffff;
+    border: 1px solid #c7d0da;
+    padding: 14px;
+    margin-bottom: 14px;
+}
+.row {
+    margin-bottom: 12px;
+}
+label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+input.text {
+    width: 100%;
+    box-sizing: border-box;
+    border: 1px solid #a7b2be;
+    padding: 7px;
+    font-family: Consolas, Courier New, monospace;
+    font-size: 13px;
+}
+select {
+    width: 220px;
+    border: 1px solid #a7b2be;
+    padding: 6px;
+    font-size: 13px;
+}
+select.wide {
+    width: 100%;
+}
+.checks label {
+    font-weight: 400;
+    margin: 7px 0;
+}
+.buttons {
+    text-align: right;
+    padding-top: 6px;
+}
+button {
+    min-width: 118px;
+    padding: 8px 12px;
+    border: 1px solid #7c8794;
+    background: #e8edf3;
+    color: #1f2933;
+    font-weight: 600;
+    cursor: pointer;
+}
+button.primary {
+    background: #155b9f;
+    border-color: #124d86;
+    color: #ffffff;
+}
+button:disabled {
+    background: #d7dde5;
+    border-color: #bac3cc;
+    color: #7a8591;
+    cursor: default;
+}
+#statusBox {
+    min-height: 42px;
+    border: 1px solid #c7d0da;
+    background: #f8fafc;
+    padding: 10px;
+    white-space: pre-wrap;
+}
+.danger {
+    color: #9a3412;
+    font-weight: 600;
+}
+</style>
+<script language="JScript" type="text/javascript">
+var fso = new ActiveXObject("Scripting.FileSystemObject");
+var shell = new ActiveXObject("WScript.Shell");
+var deployEnv = {};
+var envLoaded = false;
+var htaDir = "";
+var htaLogPath = "";
+var paramsPath = "";
+var exitCodePath = "";
+var exitCodeWritten = false;
+var deploymentStarted = false;
+
+function byId(id) {
+    return document.getElementById(id);
+}
+
+function setStatus(message) {
+    byId("statusBox").innerText = message;
+}
+
+function getHtaDirectory() {
+    var path = unescape(location.pathname);
+    path = path.replace(/\//g, "\\");
+    if (path.charAt(0) == "\\" && path.charAt(2) == ":") {
+        path = path.substring(1);
+    }
+    return fso.GetParentFolderName(path);
+}
+
+function trimText(value) {
+    return String(value).replace(/^\s+|\s+$/g, "");
+}
+
+function combinePath(left, right) {
+    if (left.charAt(left.length - 1) == "\\") {
+        return left + right;
+    }
+    return left + "\\" + right;
+}
+
+function ensureFolder(path) {
+    if (!path || fso.FolderExists(path)) {
+        return;
+    }
+    var parent = fso.GetParentFolderName(path);
+    if (parent && parent != path && !fso.FolderExists(parent)) {
+        ensureFolder(parent);
+    }
+    if (!fso.FolderExists(path)) {
+        fso.CreateFolder(path);
+    }
+}
+
+function writeTextFile(path, text) {
+    var file = fso.CreateTextFile(path, true);
+    file.Write(text);
+    file.Close();
+}
+
+function appendTextFile(path, text) {
+    var file = fso.OpenTextFile(path, 8, true);
+    file.Write(text);
+    file.Close();
+}
+
+function nowText() {
+    var d = new Date();
+    function pad(v) {
+        return (v < 10 ? "0" : "") + v;
+    }
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+        " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+}
+
+function logMessage(message) {
+    var line = nowText() + " " + message + "\r\n";
+    try {
+        if (htaLogPath) {
+            appendTextFile(htaLogPath, line);
+        }
+        if (deployEnv.SESSION_LOG) {
+            appendTextFile(deployEnv.SESSION_LOG, "[10] " + line);
+        }
+    } catch (e) {
+    }
+}
+
+function parseEnvLine(line) {
+    var text = trimText(line);
+    var match = /^set\s+"([^=]+)=(.*)"$/i.exec(text);
+    if (match) {
+        deployEnv[match[1].toUpperCase()] = match[2];
+    }
+}
+
+function readEnvFile(path) {
+    if (!fso.FileExists(path)) {
+        return false;
+    }
+    var file = fso.OpenTextFile(path, 1, false);
+    while (!file.AtEndOfStream) {
+        parseEnvLine(file.ReadLine());
+    }
+    file.Close();
+    return true;
+}
+
+function inferFallbackEnv() {
+    var tempRoot = shell.ExpandEnvironmentStrings("%TEMP%");
+    deployEnv.WORKDIR = htaDir;
+    deployEnv.LOGDIR = combinePath(tempRoot, "AutoApply\\LOG\\UNKNOWN_HTA_ENV");
+}
+
+function preparePaths() {
+    var htaDetail = combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta");
+    htaLogPath = combinePath(htaDetail, "deploy_hta.log");
+    paramsPath = combinePath(htaDetail, "selected_params.ini");
+    exitCodePath = combinePath(htaDetail, "hta_exit_code.txt");
+}
+
+function readDeployEnv() {
+    htaDir = getHtaDirectory();
+    var envPath = combinePath(htaDir, "DeployEnv.cmd");
+    var currentEnvPath = fso.GetAbsolutePathName("DeployEnv.cmd");
+    deployEnv = {};
+
+    if (!readEnvFile(envPath) && !readEnvFile(currentEnvPath)) {
+        inferFallbackEnv();
+        preparePaths();
+        return false;
+    }
+
+    if (!deployEnv.WORKDIR) {
+        deployEnv.WORKDIR = htaDir;
+    }
+    if (!deployEnv.LOGDIR) {
+        inferFallbackEnv();
+        preparePaths();
+        return false;
+    }
+    preparePaths();
+    return true;
+}
+
+function writeExitCode(code, forceOverwrite) {
+    if (exitCodeWritten && forceOverwrite !== true) {
+        return true;
+    }
+    try {
+        if (!exitCodePath) {
+            preparePaths();
+        }
+        ensureFolder(fso.GetParentFolderName(exitCodePath));
+        writeTextFile(exitCodePath, String(code) + "\r\n");
+        exitCodeWritten = true;
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function handleWindowUnload() {
+    if (!exitCodeWritten && !deploymentStarted) {
+        writeExitCode(10, false);
+    }
+}
+
+function updateDeployState() {
+    var ready = envLoaded &&
+        byId("confirmWim").checked &&
+        byId("confirmDisk").checked &&
+        byId("confirmRecovery").checked;
+    byId("deployButton").disabled = !ready;
+}
+
+function resetConfirmation(confirmId) {
+    byId(confirmId).checked = false;
+    updateDeployState();
+}
+
+function updateWimCustomState() {
+    byId("customWimPath").disabled = byId("wimPath").value != "__CUSTOM__";
+    resetConfirmation("confirmWim");
+}
+
+function getEffectiveWimPath() {
+    if (byId("wimPath").value == "__CUSTOM__") {
+        return trimText(byId("customWimPath").value);
+    }
+    return trimText(byId("wimPath").value);
+}
+
+function finalConfirm() {
+    var disk = trimText(byId("targetDisk").value);
+    var wimPath = getEffectiveWimPath();
+    var recoverySize = trimText(byId("recoverySize").value);
+    var imageIndex = trimText(byId("imageIndex").value);
+    var message = "Final destructive confirmation\r\n\r\n" +
+        "The tool will clean Disk " + disk + ".\r\n" +
+        "WIM path: " + wimPath + "\r\n" +
+        "Image index: " + imageIndex + "\r\n" +
+        "Recovery partition size: " + recoverySize + " MB\r\n\r\n" +
+        "Continue?";
+    return window.confirm(message);
+}
+
+function validateInputs() {
+    if (getEffectiveWimPath() == "") {
+        setStatus("WIM path is required.");
+        return false;
+    }
+    if (trimText(byId("targetDisk").value) == "") {
+        setStatus("Target disk is required.");
+        return false;
+    }
+    if (trimText(byId("recoverySize").value) == "") {
+        setStatus("Recovery partition size is required.");
+        return false;
+    }
+    if (trimText(byId("imageIndex").value) == "") {
+        setStatus("Image index is required.");
+        return false;
+    }
+    return true;
+}
+
+function writeParams() {
+    var text = "";
+    text += "WIM_PATH=" + getEffectiveWimPath() + "\r\n";
+    text += "TARGET_DISK=" + trimText(byId("targetDisk").value) + "\r\n";
+    text += "RECOVERY_SIZE_MB=" + trimText(byId("recoverySize").value) + "\r\n";
+    text += "IMAGE_INDEX=" + trimText(byId("imageIndex").value) + "\r\n";
+    writeTextFile(paramsPath, text);
+    logMessage("Wrote selected_params.ini to " + paramsPath);
+}
+
+function quotePath(path) {
+    return "\"" + path + "\"";
+}
+
+function runApplyImage() {
+    var applyPath = combinePath(deployEnv.WORKDIR, "ApplyImage.bat");
+    if (!fso.FileExists(applyPath)) {
+        logMessage("ApplyImage.bat not found at " + applyPath);
+        setStatus("ApplyImage.bat was not found:\r\n" + applyPath);
+        return 30;
+    }
+    var command = "cmd.exe /c " + quotePath(quotePath(applyPath) + " " + quotePath(paramsPath));
+    logMessage("Running ApplyImage.bat.");
+    return shell.Run(command, 1, true);
+}
+
+function startDeployment() {
+    var rc = 90;
+    try {
+        if (!envLoaded) {
+            setStatus("DeployEnv.cmd is not available. Deployment cannot start.");
+            writeExitCode(30, true);
+            return;
+        }
+        if (!byId("confirmWim").checked || !byId("confirmDisk").checked || !byId("confirmRecovery").checked) {
+            setStatus("Confirm all deployment parameters before starting.");
+            updateDeployState();
+            return;
+        }
+        if (!validateInputs()) {
+            return;
+        }
+        if (!finalConfirm()) {
+            logMessage("Operator cancelled final confirmation.");
+            writeExitCode(10, false);
+            setStatus("Deployment cancelled before parameters were written.");
+            window.close();
+            return;
+        }
+
+        ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
+        ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
+        logMessage("Deployment confirmed by operator.");
+        writeParams();
+        setStatus("Deployment is running. Do not close this window.");
+        byId("deployButton").disabled = true;
+        byId("cancelButton").disabled = true;
+
+        deploymentStarted = true;
+        writeExitCode(90, true);
+        rc = runApplyImage();
+        writeExitCode(rc, true);
+
+        if (rc == 0) {
+            logMessage("ApplyImage.bat completed successfully.");
+            setStatus("Deployment completed successfully.\r\nReturn code: 0\r\nClose this window to continue.");
+        } else {
+            logMessage("ApplyImage.bat failed with return code " + rc + ".");
+            setStatus("Deployment failed.\r\nReturn code: " + rc + "\r\nReview deployment logs before retrying.");
+        }
+        byId("closeButton").style.display = "inline-block";
+    } catch (e) {
+        logMessage("HTA error: " + e.message);
+        writeExitCode(rc, true);
+        setStatus("Deployment UI failed.\r\nReturn code: " + rc + "\r\nError: " + e.message);
+        byId("closeButton").style.display = "inline-block";
+    }
+}
+
+function cancelDeployment() {
+    writeExitCode(10, false);
+    logMessage("Operator cancelled deployment.");
+    window.close();
+}
+
+function init() {
+    byId("wimPath").value = "Z:\\Images\\Install.wim";
+    byId("customWimPath").value = "";
+    updateWimCustomState();
+    byId("targetDisk").value = "0";
+    byId("recoverySize").value = "1536";
+    byId("imageIndex").value = "1";
+
+    try {
+        envLoaded = readDeployEnv();
+    } catch (e) {
+        envLoaded = false;
+        try {
+            htaDir = getHtaDirectory();
+            inferFallbackEnv();
+            preparePaths();
+            setStatus("DeployEnv.cmd could not be read. Deployment is disabled.\r\n" + e.message);
+            writeExitCode(30, true);
+            logMessage("DeployEnv.cmd read failed: " + e.message);
+        } catch (inner) {
+            setStatus("DeployEnv.cmd could not be read. Deployment is disabled.");
+        }
+        updateDeployState();
+        return;
+    }
+    if (!envLoaded) {
+        setStatus("DeployEnv.cmd could not be read. Deployment is disabled.");
+        writeExitCode(30, true);
+    } else {
+        try {
+            ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
+            ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
+            logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
+            setStatus("Ready. Review settings and complete all confirmations.");
+        } catch (e) {
+            envLoaded = false;
+            setStatus("Log directory could not be prepared. Deployment is disabled.\r\n" + e.message);
+            writeExitCode(30, true);
+        }
+    }
+    updateDeployState();
+}
+</script>
+</head>
+<body onload="init()" onunload="handleWindowUnload()">
+<div class="wrap">
+    <div class="header">
+        <h1>WinPE Deployment Tool</h1>
+        <div class="subtle">Review deployment inputs before applying the image.</div>
+    </div>
+
+    <div class="panel">
+        <div class="row">
+            <label for="wimPath">WIM path</label>
+            <select class="wide" id="wimPath" onchange="updateWimCustomState()">
+                <option value="Z:\Images\Install.wim">Z:\Images\Install.wim</option>
+                <option value="Z:\Images\install.wim">Z:\Images\install.wim</option>
+                <option value="__CUSTOM__">Other/custom path</option>
+            </select>
+        </div>
+        <div class="row">
+            <label for="customWimPath">Custom WIM path</label>
+            <input class="text" type="text" id="customWimPath" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
+        </div>
+        <div class="row">
+            <label for="targetDisk">Target disk</label>
+            <select id="targetDisk" onchange="resetConfirmation('confirmDisk')">
+                <option value="0">Disk 0</option>
+                <option value="1">Disk 1</option>
+                <option value="2">Disk 2</option>
+                <option value="3">Disk 3</option>
+            </select>
+        </div>
+        <div class="row">
+            <label for="recoverySize">Recovery partition size (MB)</label>
+            <select id="recoverySize" onchange="resetConfirmation('confirmRecovery')">
+                <option value="1536">1536 MB</option>
+                <option value="1024">1024 MB</option>
+                <option value="2048">2048 MB</option>
+                <option value="3072">3072 MB</option>
+            </select>
+        </div>
+        <div class="row">
+            <label for="imageIndex">Image index</label>
+            <input class="text" type="text" id="imageIndex" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
+        </div>
+    </div>
+
+    <div class="panel checks">
+        <div class="danger">Required confirmations</div>
+        <label><input type="checkbox" id="confirmWim" onclick="updateDeployState()" /> I confirmed this WIM path.</label>
+        <label><input type="checkbox" id="confirmDisk" onclick="updateDeployState()" /> I confirmed this disk will be cleaned.</label>
+        <label><input type="checkbox" id="confirmRecovery" onclick="updateDeployState()" /> I confirmed this recovery partition size.</label>
+    </div>
+
+    <div class="panel">
+        <label>Status</label>
+        <div id="statusBox">Initializing...</div>
+        <div class="buttons">
+            <button id="cancelButton" onclick="cancelDeployment()">Cancel</button>
+            <button id="deployButton" class="primary" onclick="startDeployment()" disabled>Deploy</button>
+            <button id="closeButton" onclick="window.close()" style="display:none">Close</button>
+        </div>
+    </div>
+</div>
+</body>
+</html>
