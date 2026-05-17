@@ -6,6 +6,8 @@ set "SERVER_SHARE=\\192.168.1.143\Deploy"
 set "SERVER_DRIVE=Z:"
 set "REMOTE_SCRIPT_DIR=Z:\AutoApply"
 set "REMOTE_LOG_ROOT=Z:\LOG"
+set "PING_MAX_RETRY=5"
+set "NET_USE_MAX_RETRY=3"
 
 set "STAMP=%DATE%_%TIME%"
 set "STAMP=%STAMP:/=%"
@@ -56,8 +58,7 @@ if errorlevel 1 (
     exit /b !ERRORLEVEL!
 )
 
-call :LogStep "Checking server connectivity: %SERVER_IP%"
-ping -n 2 "%SERVER_IP%" >> "%STARTNET_LOG%" 2>&1
+call :PingServerWithRetry
 if errorlevel 1 (
     call :Fail 40 00 "Ping to deployment server failed."
     exit /b !ERRORLEVEL!
@@ -66,8 +67,7 @@ if errorlevel 1 (
 call :LogStep "Removing existing drive mapping for %SERVER_DRIVE%."
 net use "%SERVER_DRIVE%" /delete /y >> "%STARTNET_LOG%" 2>&1
 
-call :LogStep "Mapping %SERVER_DRIVE% to %SERVER_SHARE%."
-net use "%SERVER_DRIVE%" "%SERVER_SHARE%" /persistent:no >> "%STARTNET_LOG%" 2>&1
+call :MapServerDriveWithRetry
 if errorlevel 1 (
     call :Fail 40 00 "Failed to map deployment share."
     exit /b !ERRORLEVEL!
@@ -91,6 +91,10 @@ if not exist "%WORKDIR%\Deploy.hta" (
 )
 if not exist "%WORKDIR%\ApplyImage.bat" (
     call :Fail 30 00 "Local ApplyImage.bat is missing after copy."
+    exit /b !ERRORLEVEL!
+)
+if not exist X:\Windows\System32\mshta.exe (
+    call :Fail 30 00 "mshta.exe not found. WinPE-HTA component may be missing."
     exit /b !ERRORLEVEL!
 )
 
@@ -145,9 +149,45 @@ exit /b %HTA_RC%
 ) > "%ENV_FILE%"
 exit /b 0
 
+:PingServerWithRetry
+set "PING_ATTEMPT=1"
+:PingServerRetryLoop
+call :LogStep "Checking server connectivity: %SERVER_IP% (attempt %PING_ATTEMPT%/%PING_MAX_RETRY%)."
+ping -n 2 "%SERVER_IP%" >> "%STARTNET_LOG%" 2>&1
+if not errorlevel 1 (
+    call :LogStep "Server connectivity check passed on attempt %PING_ATTEMPT%."
+    exit /b 0
+)
+call :LogStep "Server connectivity check failed on attempt %PING_ATTEMPT%."
+if %PING_ATTEMPT% GEQ %PING_MAX_RETRY% (
+    exit /b 1
+)
+set /a PING_ATTEMPT+=1
+ping -n 3 127.0.0.1 >nul 2>&1
+goto :PingServerRetryLoop
+
+:MapServerDriveWithRetry
+set "NET_USE_ATTEMPT=1"
+:MapServerDriveRetryLoop
+call :LogStep "Mapping %SERVER_DRIVE% to %SERVER_SHARE% (attempt %NET_USE_ATTEMPT%/%NET_USE_MAX_RETRY%)."
+net use "%SERVER_DRIVE%" "%SERVER_SHARE%" /persistent:no >> "%STARTNET_LOG%" 2>&1
+if not errorlevel 1 (
+    call :LogStep "Drive mapping completed on attempt %NET_USE_ATTEMPT%."
+    exit /b 0
+)
+call :LogStep "Drive mapping failed on attempt %NET_USE_ATTEMPT%."
+if %NET_USE_ATTEMPT% GEQ %NET_USE_MAX_RETRY% (
+    exit /b 1
+)
+net use "%SERVER_DRIVE%" /delete /y >> "%STARTNET_LOG%" 2>&1
+set /a NET_USE_ATTEMPT+=1
+ping -n 3 127.0.0.1 >nul 2>&1
+goto :MapServerDriveRetryLoop
+
 :WriteReadme
 (
     echo WinPE deployment log bundle
+    echo.
     echo RunID: %RUNID%
     echo.
     echo Start here:
@@ -156,6 +196,18 @@ exit /b 0
     echo 3. Open details\00_startnet, details\10_deploy_hta, and details\20_applyimage for raw logs.
     echo.
     echo Local log root: %LOGDIR%
+    echo.
+    echo Return codes:
+    echo 0  = SUCCESS
+    echo 10 = CANCELLED
+    echo 20 = Parameter / environment error
+    echo 21 = Preparation / script generation error
+    echo 22 = DiskPart failed
+    echo 23 = DISM Apply-Image failed
+    echo 24 = BCDBoot failed
+    echo 30 = HTA / script launch error
+    echo 40 = Network / share mapping error
+    echo 90 = Unknown / interrupted / running state
 ) > "%README_FILE%"
 exit /b 0
 
@@ -247,6 +299,15 @@ if errorlevel 1 (
     call :LogStep "Log archive refresh failed for startnet.log."
     call :SetArchiveStatus "FAILED: refresh startnet log"
     copy /y "%RESULT_FILE%" "%ARCHIVE_DIR%\DeploymentResult.txt" >nul 2>&1
+    exit /b 1
+)
+copy /y "%SESSION_LOG%" "%ARCHIVE_DIR%\DeploySession.log" > "%ARCHIVE_COPY_LOG%" 2>&1
+if errorlevel 1 (
+    type "%ARCHIVE_COPY_LOG%" >> "%STARTNET_LOG%"
+    call :LogStep "Log archive refresh failed for DeploySession.log."
+    call :SetArchiveStatus "FAILED: refresh session log"
+    copy /y "%RESULT_FILE%" "%ARCHIVE_DIR%\DeploymentResult.txt" >nul 2>&1
+    copy /y "%STARTNET_LOG%" "%ARCHIVE_DIR%\details\00_startnet\startnet.log" >nul 2>&1
     exit /b 1
 )
 exit /b 0

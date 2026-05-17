@@ -16,6 +16,7 @@ if errorlevel 1 (
 set "APPLY_DETAIL=%LOGDIR%\details\20_applyimage"
 set "APPLY_LOG=%APPLY_DETAIL%\applyimage.log"
 set "DISKPART_SCRIPT=%APPLY_DETAIL%\diskpart.script.txt"
+set "DISKPART_PRECHECK_SCRIPT=%APPLY_DETAIL%\diskpart.precheck.script.txt"
 set "DISKPART_LOG=%APPLY_DETAIL%\diskpart.log"
 set "BAD_PIPE=^|"
 
@@ -52,6 +53,24 @@ if errorlevel 1 (
     exit /b 20
 )
 
+call :ValidateTargetDisk
+if errorlevel 1 (
+    call :Fail 20 "Target disk validation failed. Disk will not be cleaned."
+    exit /b 20
+)
+
+call :ValidateWimImageIndex
+if errorlevel 1 (
+    call :Fail 20 "WIM image index validation failed. Disk will not be cleaned."
+    exit /b 20
+)
+
+call :ValidateDriveLetters
+if errorlevel 1 (
+    call :Fail 20 "Required drive letters are already in use. Disk will not be cleaned."
+    exit /b 20
+)
+
 call :GenerateDiskPartScript
 if errorlevel 1 (
     call :Fail 21 "Failed to generate DiskPart script."
@@ -59,9 +78,16 @@ if errorlevel 1 (
 )
 
 call :Log "Running DiskPart against disk %TARGET_DISK%."
-diskpart /s "%DISKPART_SCRIPT%" > "%DISKPART_LOG%" 2>&1
+>> "%DISKPART_LOG%" echo.
+>> "%DISKPART_LOG%" echo ===== DiskPart clean and partition stage =====
+diskpart /s "%DISKPART_SCRIPT%" >> "%DISKPART_LOG%" 2>&1
 if errorlevel 1 (
     call :Fail 22 "DiskPart failed. See %DISKPART_LOG%."
+    exit /b 22
+)
+call :ScanDiskPartLog
+if errorlevel 1 (
+    call :Fail 22 "DiskPart log contains error keywords. See %DISKPART_LOG%."
     exit /b 22
 )
 call :Log "DiskPart completed successfully."
@@ -74,6 +100,11 @@ if errorlevel 1 (
     call :Fail 23 "DISM apply image failed."
     exit /b 23
 )
+call :VerifyDismResult
+if errorlevel 1 (
+    call :Fail 23 "DISM returned success but applied Windows files are incomplete."
+    exit /b 23
+)
 call :Log "DISM apply image completed successfully."
 
 call :Log "Creating UEFI boot files."
@@ -82,6 +113,11 @@ call :Log "Creating UEFI boot files."
 bcdboot W:\Windows /s S: /f UEFI >> "%APPLY_LOG%" 2>&1
 if errorlevel 1 (
     call :Fail 24 "BCDBoot failed."
+    exit /b 24
+)
+call :VerifyBcdBootResult
+if errorlevel 1 (
+    call :Fail 24 "BCDBoot returned success but UEFI boot files are incomplete."
     exit /b 24
 )
 call :Log "BCDBoot completed successfully."
@@ -178,8 +214,8 @@ if not defined RECOVERY_SIZE_MB (
         if errorlevel 1 (
             call :Log "ERROR: RECOVERY_SIZE_MB must be numeric."
             set "VALIDATION_FAILED=1"
-        ) else if !RECOVERY_SIZE_MB! LSS 512 (
-            call :Log "ERROR: RECOVERY_SIZE_MB must be at least 512."
+        ) else if !RECOVERY_SIZE_MB! LSS 1536 (
+            call :Log "ERROR: RECOVERY_SIZE_MB must be at least 1536."
             set "VALIDATION_FAILED=1"
         )
     )
@@ -205,6 +241,107 @@ if not defined IMAGE_INDEX (
 
 if "%VALIDATION_FAILED%"=="1" exit /b 1
 call :Log "Validated parameters: WIM_PATH=!WIM_PATH!, TARGET_DISK=!TARGET_DISK!, RECOVERY_SIZE_MB=!RECOVERY_SIZE_MB!, IMAGE_INDEX=!IMAGE_INDEX!"
+exit /b 0
+
+:ValidateTargetDisk
+call :Log "Validating target disk %TARGET_DISK% before clean."
+(
+    echo ===== DiskPart target disk precheck =====
+    echo Selected disk: %TARGET_DISK%
+) > "%DISKPART_LOG%"
+
+(
+    echo list disk
+    echo select disk %TARGET_DISK%
+    echo detail disk
+) > "%DISKPART_PRECHECK_SCRIPT%"
+
+if errorlevel 1 (
+    call :Log "ERROR: Failed to generate DiskPart precheck script."
+    exit /b 1
+)
+
+diskpart /s "%DISKPART_PRECHECK_SCRIPT%" >> "%DISKPART_LOG%" 2>&1
+if errorlevel 1 (
+    call :Log "ERROR: DiskPart could not select target disk %TARGET_DISK%."
+    exit /b 1
+)
+call :ScanDiskPartLog
+if errorlevel 1 (
+    call :Log "ERROR: DiskPart precheck log contains error keywords. Disk will not be cleaned."
+    exit /b 1
+)
+call :Log "DiskPart precheck log keyword scan passed."
+
+where wmic >nul 2>&1
+if errorlevel 1 (
+    call :Log "WMIC is not available; target disk existence was validated with DiskPart only."
+    call :Log "Target disk precheck passed."
+    exit /b 0
+)
+
+set "TARGET_DISK_WMI_FOUND=0"
+for /f "tokens=1* delims==" %%A in ('wmic diskdrive where "Index=%TARGET_DISK%" get InterfaceType^,MediaType^,Model^,Size /value 2^>nul') do (
+    set "WMI_KEY=%%~A"
+    set "WMI_VALUE=%%~B"
+    if defined WMI_KEY (
+        set "TARGET_DISK_WMI_FOUND=1"
+        >> "%DISKPART_LOG%" echo WMI %%~A=%%~B
+        if /i "!WMI_KEY!"=="InterfaceType" (
+            set "CHECK_VALUE=!WMI_VALUE!"
+            call :IsExcludedBusType
+            if errorlevel 1 (
+                call :Log "ERROR: WMI reports target disk InterfaceType is excluded: !WMI_VALUE!"
+                exit /b 1
+            )
+        )
+        if /i "!WMI_KEY!"=="MediaType" (
+            set "MEDIA_CHECK=!WMI_VALUE!"
+            if /i not "!MEDIA_CHECK:Removable=!"=="!MEDIA_CHECK!" (
+                call :Log "ERROR: WMI reports target disk media is removable: !WMI_VALUE!"
+                exit /b 1
+            )
+        )
+    )
+)
+
+if not "%TARGET_DISK_WMI_FOUND%"=="1" (
+    call :Log "ERROR: WMIC could not find disk index %TARGET_DISK%."
+    exit /b 1
+)
+
+call :Log "Target disk precheck passed."
+exit /b 0
+
+:ValidateWimImageIndex
+call :Log "Validating WIM image index %IMAGE_INDEX% before clean."
+>> "%APPLY_LOG%" echo.
+>> "%APPLY_LOG%" echo Running DISM WIM index validation.
+dism /Get-WimInfo /WimFile:"%WIM_PATH%" /Index:%IMAGE_INDEX% >> "%APPLY_LOG%" 2>&1
+if errorlevel 1 (
+    call :Log "ERROR: WIM image index %IMAGE_INDEX% is not valid for %WIM_PATH%."
+    exit /b 1
+)
+call :Log "WIM image index precheck passed."
+exit /b 0
+
+:ValidateDriveLetters
+call :Log "Checking S:, W:, and R: drive letter availability before clean."
+set "DRIVE_LETTER_FAILED=0"
+if exist S:\NUL (
+    call :Log "ERROR: S: is already in use."
+    set "DRIVE_LETTER_FAILED=1"
+)
+if exist W:\NUL (
+    call :Log "ERROR: W: is already in use."
+    set "DRIVE_LETTER_FAILED=1"
+)
+if exist R:\NUL (
+    call :Log "ERROR: R: is already in use."
+    set "DRIVE_LETTER_FAILED=1"
+)
+if "%DRIVE_LETTER_FAILED%"=="1" exit /b 1
+call :Log "Drive letter precheck passed."
 exit /b 0
 
 :NormalizeIniKey
@@ -273,12 +410,69 @@ set "NUMBER_REMAINDER=!NUMBER_REMAINDER:9=!"
 if defined NUMBER_REMAINDER exit /b 1
 exit /b 0
 
+:IsExcludedBusType
+if not defined CHECK_VALUE exit /b 0
+if /i "!CHECK_VALUE!"=="USB" exit /b 1
+if /i "!CHECK_VALUE!"=="SD" exit /b 1
+if /i "!CHECK_VALUE!"=="MMC" exit /b 1
+if /i "!CHECK_VALUE!"=="IEEE1394" exit /b 1
+if /i "!CHECK_VALUE!"=="1394" exit /b 1
+exit /b 0
+
+:ScanDiskPartLog
+if not exist "%DISKPART_LOG%" (
+    call :Log "ERROR: DiskPart log does not exist: %DISKPART_LOG%"
+    exit /b 1
+)
+
+findstr /i /c:"error" /c:"failed" /c:"failure" /c:"cannot" /c:"unable" /c:"not selected" /c:"no disk" /c:"错误" /c:"失败" "%DISKPART_LOG%" >nul 2>&1
+if not errorlevel 1 (
+    call :Log "ERROR: DiskPart log contains an error keyword."
+    >> "%APPLY_LOG%" echo.
+    >> "%APPLY_LOG%" echo DiskPart error keyword matches:
+    findstr /i /c:"error" /c:"failed" /c:"failure" /c:"cannot" /c:"unable" /c:"not selected" /c:"no disk" /c:"错误" /c:"失败" "%DISKPART_LOG%" >> "%APPLY_LOG%" 2>&1
+    exit /b 1
+)
+
+call :Log "DiskPart log keyword scan passed."
+exit /b 0
+
+:VerifyDismResult
+call :Log "Verifying applied Windows image files."
+if not exist W:\Windows\System32\Config\SYSTEM (
+    call :Log "ERROR: Missing W:\Windows\System32\Config\SYSTEM after DISM."
+    exit /b 1
+)
+if not exist W:\Windows\System32\winload.efi (
+    call :Log "ERROR: Missing W:\Windows\System32\winload.efi after DISM."
+    exit /b 1
+)
+if not exist W:\Windows\explorer.exe (
+    call :Log "ERROR: Missing W:\Windows\explorer.exe after DISM."
+    exit /b 1
+)
+call :Log "DISM result existence check passed."
+exit /b 0
+
+:VerifyBcdBootResult
+call :Log "Verifying UEFI boot files on S:."
+if not exist S:\EFI\Microsoft\Boot\BCD (
+    call :Log "ERROR: Missing S:\EFI\Microsoft\Boot\BCD after BCDBoot."
+    exit /b 1
+)
+if not exist S:\EFI\Microsoft\Boot\bootmgfw.efi (
+    call :Log "ERROR: Missing S:\EFI\Microsoft\Boot\bootmgfw.efi after BCDBoot."
+    exit /b 1
+)
+call :Log "BCDBoot result existence check passed."
+exit /b 0
+
 :GenerateDiskPartScript
 (
     echo select disk %TARGET_DISK%
     echo clean
     echo convert gpt
-    echo create partition efi size=100
+    echo create partition efi size=300
     echo format quick fs=fat32 label="System"
     echo assign letter=S
     echo create partition msr size=16

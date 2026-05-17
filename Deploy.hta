@@ -5,16 +5,14 @@
 <HTA:APPLICATION
     ID="WinPEDeploymentTool"
     APPLICATIONNAME="WinPEDeploymentTool"
-    BORDER="thin"
-    BORDERSTYLE="normal"
+    BORDER="none"
     CAPTION="yes"
     CONTEXTMENU="no"
-    MAXIMIZEBUTTON="no"
-    MINIMIZEBUTTON="yes"
+    WINDOWSTATE="maximize"
+    RESIZABLE="no"
     SCROLL="no"
     SINGLEINSTANCE="yes"
     SYSMENU="yes"
-    WINDOWSTATE="normal"
 >
 <meta http-equiv="X-UA-Compatible" content="IE=9">
 <style type="text/css">
@@ -113,6 +111,10 @@ button:disabled {
     color: #9a3412;
     font-weight: 600;
 }
+.envline {
+    font-family: Consolas, Courier New, monospace;
+    overflow-wrap: break-word;
+}
 </style>
 <script language="JScript" type="text/javascript">
 var fso = new ActiveXObject("Scripting.FileSystemObject");
@@ -125,6 +127,7 @@ var paramsPath = "";
 var exitCodePath = "";
 var exitCodeWritten = false;
 var deploymentStarted = false;
+var diskInventory = {};
 
 function byId(id) {
     return document.getElementById(id);
@@ -144,6 +147,9 @@ function getHtaDirectory() {
 }
 
 function trimText(value) {
+    if (value === null || value === undefined) {
+        return "";
+    }
     return String(value).replace(/^\s+|\s+$/g, "");
 }
 
@@ -234,15 +240,25 @@ function preparePaths() {
     exitCodePath = combinePath(htaDetail, "hta_exit_code.txt");
 }
 
+function setEnvironmentInfo() {
+    if (!byId("runIdValue") || !byId("logDirValue")) {
+        return;
+    }
+    byId("runIdValue").innerText = deployEnv.RUNID ? deployEnv.RUNID : "(not loaded)";
+    byId("logDirValue").innerText = deployEnv.LOGDIR ? deployEnv.LOGDIR : "(not loaded)";
+}
+
 function readDeployEnv() {
     htaDir = getHtaDirectory();
     var envPath = combinePath(htaDir, "DeployEnv.cmd");
     var currentEnvPath = fso.GetAbsolutePathName("DeployEnv.cmd");
     deployEnv = {};
+    setEnvironmentInfo();
 
     if (!readEnvFile(envPath) && !readEnvFile(currentEnvPath)) {
         inferFallbackEnv();
         preparePaths();
+        setEnvironmentInfo();
         return false;
     }
 
@@ -252,9 +268,11 @@ function readDeployEnv() {
     if (!deployEnv.LOGDIR) {
         inferFallbackEnv();
         preparePaths();
+        setEnvironmentInfo();
         return false;
     }
     preparePaths();
+    setEnvironmentInfo();
     return true;
 }
 
@@ -282,7 +300,11 @@ function handleWindowUnload() {
 }
 
 function updateDeployState() {
+    var disk = trimText(byId("targetDisk").value);
+
     var ready = envLoaded &&
+        disk != "" &&
+        diskInventory[disk] &&
         byId("confirmWim").checked &&
         byId("confirmDisk").checked &&
         byId("confirmRecovery").checked;
@@ -299,6 +321,169 @@ function updateWimCustomState() {
     resetConfirmation("confirmWim");
 }
 
+function clearSelect(selectObj) {
+    while (selectObj.options.length > 0) {
+        selectObj.remove(0);
+    }
+}
+
+function addOption(selectObj, value, text) {
+    var option = document.createElement("option");
+    option.value = value;
+    option.text = text;
+    selectObj.add(option);
+    return option;
+}
+
+function bytesToGbText(sizeValue) {
+    var bytes = parseFloat(sizeValue);
+    if (isNaN(bytes) || bytes <= 0) {
+        return "UnknownGB";
+    }
+    return Math.round(bytes / 1073741824) + "GB";
+}
+
+function normalizeBusType(value) {
+    var text = trimText(value);
+    var busMap = {
+        "0": "Unknown",
+        "1": "SCSI",
+        "2": "ATAPI",
+        "3": "ATA",
+        "4": "IEEE1394",
+        "5": "SSA",
+        "6": "Fibre Channel",
+        "7": "USB",
+        "8": "RAID",
+        "9": "iSCSI",
+        "10": "SAS",
+        "11": "SATA",
+        "12": "SD",
+        "13": "MMC",
+        "14": "Virtual",
+        "15": "File Backed Virtual",
+        "16": "Storage Spaces",
+        "17": "NVMe"
+    };
+    if (busMap[text]) {
+        return busMap[text];
+    }
+    return text == "" ? "Unknown" : text;
+}
+
+function isExcludedDisk(busType, mediaType, model) {
+    var bus = normalizeBusType(busType).toUpperCase();
+    var media = trimText(mediaType).toUpperCase();
+    var diskModel = trimText(model).toUpperCase();
+    if (bus == "USB" || bus == "SD" || bus == "MMC" || bus == "IEEE1394") {
+        return true;
+    }
+    if (media.indexOf("REMOVABLE") >= 0) {
+        return true;
+    }
+    if (diskModel.indexOf(" USB ") >= 0 || diskModel.indexOf("USB DISK") >= 0) {
+        return true;
+    }
+    return false;
+}
+
+function addDiskOption(index, sizeBytes, model, busType, mediaType) {
+    var diskNumber = trimText(index);
+    if (diskNumber == "" || isExcludedDisk(busType, mediaType, model)) {
+        return;
+    }
+
+    var diskInfo = {
+        number: diskNumber,
+        sizeGb: bytesToGbText(sizeBytes),
+        model: trimText(model) == "" ? "Unknown model" : trimText(model),
+        busType: normalizeBusType(busType),
+        mediaType: trimText(mediaType)
+    };
+    diskInventory[diskNumber] = diskInfo;
+
+    var optionText = "Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType;
+    addOption(byId("targetDisk"), diskInfo.number, optionText);
+}
+
+function enumerateDisksFromStorageWmi() {
+    var service = GetObject("winmgmts:{impersonationLevel=impersonate}!\\\\.\\root\\microsoft\\windows\\storage");
+    var disks = new Enumerator(service.ExecQuery("SELECT Number, FriendlyName, Size, BusType, MediaType FROM MSFT_Disk"));
+    var count = 0;
+    for (; !disks.atEnd(); disks.moveNext()) {
+        var disk = disks.item();
+        addDiskOption(disk.Number, disk.Size, disk.FriendlyName, disk.BusType, disk.MediaType);
+        count++;
+    }
+    return count;
+}
+
+function enumerateDisksFromCimv2() {
+    var service = GetObject("winmgmts:{impersonationLevel=impersonate}!\\\\.\\root\\cimv2");
+    var disks = new Enumerator(service.ExecQuery("SELECT Index, Model, Size, InterfaceType, MediaType FROM Win32_DiskDrive"));
+    var count = 0;
+    for (; !disks.atEnd(); disks.moveNext()) {
+        var disk = disks.item();
+        addDiskOption(disk.Index, disk.Size, disk.Model, disk.InterfaceType, disk.MediaType);
+        count++;
+    }
+    return count;
+}
+
+function refreshTargetDisks() {
+    var selectObj = byId("targetDisk");
+    diskInventory = {};
+    clearSelect(selectObj);
+
+    try {
+        enumerateDisksFromStorageWmi();
+    } catch (e) {
+        logMessage("MSFT_Disk enumeration failed: " + e.message);
+    }
+
+    if (selectObj.options.length == 0) {
+        try {
+            enumerateDisksFromCimv2();
+        } catch (fallbackError) {
+            logMessage("Win32_DiskDrive enumeration failed: " + fallbackError.message);
+        }
+    }
+
+    if (selectObj.options.length == 0) {
+        addOption(selectObj, "", "No eligible fixed disk found");
+        setStatus("No eligible fixed disk found. USB/removable devices are excluded.");
+        logMessage("No eligible fixed disk found after disk scan.");
+        resetConfirmation("confirmDisk");
+        return false;
+    } else {
+        selectObj.value = diskInventory["0"] ? "0" : selectObj.options[0].value;
+        logSelectedDisk("Target disk list refreshed.");
+    }
+    resetConfirmation("confirmDisk");
+    return true;
+}
+
+function getSelectedDiskInfo() {
+    var disk = trimText(byId("targetDisk").value);
+    if (diskInventory[disk]) {
+        return diskInventory[disk];
+    }
+    return {
+        number: disk,
+        sizeGb: "",
+        model: "",
+        busType: "",
+        mediaType: ""
+    };
+}
+
+function logSelectedDisk(prefix) {
+    var diskInfo = getSelectedDiskInfo();
+    if (diskInfo.number != "") {
+        logMessage(prefix + " Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType);
+    }
+}
+
 function getEffectiveWimPath() {
     if (byId("wimPath").value == "__CUSTOM__") {
         return trimText(byId("customWimPath").value);
@@ -306,13 +491,23 @@ function getEffectiveWimPath() {
     return trimText(byId("wimPath").value);
 }
 
+function containsApplyImageBadChars(value) {
+    return /["&|<>()^!]/.test(value);
+}
+
+function isPositiveInteger(value) {
+    return /^[1-9][0-9]*$/.test(trimText(value));
+}
+
 function finalConfirm() {
     var disk = trimText(byId("targetDisk").value);
+    var diskInfo = getSelectedDiskInfo();
     var wimPath = getEffectiveWimPath();
     var recoverySize = trimText(byId("recoverySize").value);
     var imageIndex = trimText(byId("imageIndex").value);
     var message = "Final destructive confirmation\r\n\r\n" +
         "The tool will clean Disk " + disk + ".\r\n" +
+        "Disk details: " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType + "\r\n" +
         "WIM path: " + wimPath + "\r\n" +
         "Image index: " + imageIndex + "\r\n" +
         "Recovery partition size: " + recoverySize + " MB\r\n\r\n" +
@@ -321,32 +516,62 @@ function finalConfirm() {
 }
 
 function validateInputs() {
-    if (getEffectiveWimPath() == "") {
+    var wimPath = getEffectiveWimPath();
+    var recoverySize = trimText(byId("recoverySize").value);
+    var imageIndex = trimText(byId("imageIndex").value);
+
+    if (wimPath == "") {
         setStatus("WIM path is required.");
+        return false;
+    }
+    if (containsApplyImageBadChars(wimPath)) {
+        setStatus("WIM path contains characters ApplyImage.bat does not accept: \" & | < > ( ) ^ !");
+        return false;
+    }
+    if (!fso.FileExists(wimPath)) {
+        setStatus("WIM file does not exist:\r\n" + wimPath);
         return false;
     }
     if (trimText(byId("targetDisk").value) == "") {
         setStatus("Target disk is required.");
         return false;
     }
-    if (trimText(byId("recoverySize").value) == "") {
+    if (!diskInventory[trimText(byId("targetDisk").value)]) {
+        setStatus("Target disk must be selected from the scanned fixed disk list.");
+        return false;
+    }
+    if (recoverySize == "") {
         setStatus("Recovery partition size is required.");
         return false;
     }
-    if (trimText(byId("imageIndex").value) == "") {
+    if (!isPositiveInteger(recoverySize)) {
+        setStatus("Recovery partition size must be a positive integer.");
+        return false;
+    }
+    if (parseInt(recoverySize, 10) < 1536) {
+        setStatus("Recovery partition size must be at least 1536 MB.");
+        return false;
+    }
+    if (imageIndex == "") {
         setStatus("Image index is required.");
+        return false;
+    }
+    if (!isPositiveInteger(imageIndex)) {
+        setStatus("Image index must be a positive integer.");
         return false;
     }
     return true;
 }
 
 function writeParams() {
+    var diskInfo = getSelectedDiskInfo();
     var text = "";
     text += "WIM_PATH=" + getEffectiveWimPath() + "\r\n";
     text += "TARGET_DISK=" + trimText(byId("targetDisk").value) + "\r\n";
     text += "RECOVERY_SIZE_MB=" + trimText(byId("recoverySize").value) + "\r\n";
     text += "IMAGE_INDEX=" + trimText(byId("imageIndex").value) + "\r\n";
     writeTextFile(paramsPath, text);
+    logMessage("Selected target disk: Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType);
     logMessage("Wrote selected_params.ini to " + paramsPath);
 }
 
@@ -361,13 +586,13 @@ function runApplyImage() {
         setStatus("ApplyImage.bat was not found:\r\n" + applyPath);
         return 30;
     }
-    var command = "cmd.exe /c " + quotePath(quotePath(applyPath) + " " + quotePath(paramsPath));
+    var command = "cmd.exe /d /c " + quotePath(quotePath(applyPath) + " " + quotePath(paramsPath));
     logMessage("Running ApplyImage.bat.");
     return shell.Run(command, 1, true);
 }
 
 function startDeployment() {
-    var rc = 90;
+    var rc = 30;
     try {
         if (!envLoaded) {
             setStatus("DeployEnv.cmd is not available. Deployment cannot start.");
@@ -398,8 +623,9 @@ function startDeployment() {
         byId("deployButton").disabled = true;
         byId("cancelButton").disabled = true;
 
-        deploymentStarted = true;
         writeExitCode(90, true);
+        deploymentStarted = true;
+        rc = 90;
         rc = runApplyImage();
         writeExitCode(rc, true);
 
@@ -413,6 +639,9 @@ function startDeployment() {
         byId("closeButton").style.display = "inline-block";
     } catch (e) {
         logMessage("HTA error: " + e.message);
+        if (!deploymentStarted) {
+            rc = 30;
+        }
         writeExitCode(rc, true);
         setStatus("Deployment UI failed.\r\nReturn code: " + rc + "\r\nError: " + e.message);
         byId("closeButton").style.display = "inline-block";
@@ -429,7 +658,6 @@ function init() {
     byId("wimPath").value = "Z:\\Images\\Install.wim";
     byId("customWimPath").value = "";
     updateWimCustomState();
-    byId("targetDisk").value = "0";
     byId("recoverySize").value = "1536";
     byId("imageIndex").value = "1";
 
@@ -458,7 +686,9 @@ function init() {
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
             logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
-            setStatus("Ready. Review settings and complete all confirmations.");
+            if (refreshTargetDisks()) {
+                setStatus("Ready. Review settings and complete all confirmations.");
+            }
         } catch (e) {
             envLoaded = false;
             setStatus("Log directory could not be prepared. Deployment is disabled.\r\n" + e.message);
@@ -478,6 +708,17 @@ function init() {
 
     <div class="panel">
         <div class="row">
+            <label>RUNID</label>
+            <div class="envline" id="runIdValue">(not loaded)</div>
+        </div>
+        <div class="row">
+            <label>LOGDIR</label>
+            <div class="envline" id="logDirValue">(not loaded)</div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="row">
             <label for="wimPath">WIM path</label>
             <select class="wide" id="wimPath" onchange="updateWimCustomState()">
                 <option value="Z:\Images\Install.wim">Z:\Images\Install.wim</option>
@@ -491,20 +732,17 @@ function init() {
         </div>
         <div class="row">
             <label for="targetDisk">Target disk</label>
-            <select id="targetDisk" onchange="resetConfirmation('confirmDisk')">
-                <option value="0">Disk 0</option>
-                <option value="1">Disk 1</option>
-                <option value="2">Disk 2</option>
-                <option value="3">Disk 3</option>
+            <select class="wide" id="targetDisk" onchange="resetConfirmation('confirmDisk'); logSelectedDisk('Target disk changed.')">
+                <option value="">Scanning local disks...</option>
             </select>
         </div>
         <div class="row">
             <label for="recoverySize">Recovery partition size (MB)</label>
             <select id="recoverySize" onchange="resetConfirmation('confirmRecovery')">
                 <option value="1536">1536 MB</option>
-                <option value="1024">1024 MB</option>
                 <option value="2048">2048 MB</option>
                 <option value="3072">3072 MB</option>
+                <option value="4096">4096 MB</option>
             </select>
         </div>
         <div class="row">
