@@ -2,6 +2,7 @@
 <html>
 <head>
 <title>WinPE Deployment Tool</title>
+<!-- HTA shell settings: maximize the WinPE UI and remove unsafe chrome/actions. -->
 <HTA:APPLICATION
     ID="WinPEDeploymentTool"
     APPLICATIONNAME="WinPEDeploymentTool"
@@ -12,80 +13,207 @@
     RESIZABLE="no"
     SCROLL="no"
     SINGLEINSTANCE="yes"
-    SYSMENU="yes"
+    SYSMENU="no"
 >
 <meta http-equiv="X-UA-Compatible" content="IE=9">
 <style type="text/css">
-body {
+html, body {
+    width: 100%;
+    height: 100%;
     margin: 0;
-    background: #f3f5f8;
-    color: #1f2933;
+    overflow: hidden;
+}
+body {
+    background: #eef2f5;
+    color: #18212b;
     font-family: Segoe UI, Arial, sans-serif;
     font-size: 13px;
 }
-.wrap {
-    width: 760px;
-    margin: 0 auto;
-    padding: 18px;
+.app {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    padding: 10px;
 }
-.header {
-    border-bottom: 1px solid #c7d0da;
-    padding-bottom: 12px;
-    margin-bottom: 16px;
+/* Main screen layout: top controls, middle progress, bottom detailed logs. */
+.top-layer {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    left: 10px;
+    height: 300px;
 }
-h1 {
-    margin: 0 0 4px 0;
-    font-size: 22px;
-    font-weight: 600;
+/* Keep the progress band fixed so it never jumps while logs refresh. */
+.middle-layer {
+    position: absolute;
+    top: 320px;
+    right: 10px;
+    left: 10px;
+    height: 100px;
 }
-.subtle {
-    color: #52616f;
+/* The log layer fills the remaining screen height below the progress band. */
+.bottom-layer {
+    position: absolute;
+    top: 430px;
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
 }
 .panel {
     background: #ffffff;
-    border: 1px solid #c7d0da;
-    padding: 14px;
-    margin-bottom: 14px;
+    border: 1px solid #bfccd8;
+    border-radius: 6px;
+    box-sizing: border-box;
+    padding: 12px;
+}
+/* Left panel is for editable deployment inputs only. */
+.left-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 49.5%;
+}
+/* Right panel is for read-only summary, confirmations, and operator actions. */
+.right-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 49.5%;
+}
+.title-row {
+    border-bottom: 1px solid #d5dde5;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+}
+h1 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+.subtle {
+    color: #53616f;
+    margin-top: 3px;
+}
+.section-title {
+    color: #354252;
+    font-size: 12px;
+    font-weight: 700;
+    margin: 8px 0 5px 0;
+    text-transform: uppercase;
 }
 .row {
-    margin-bottom: 12px;
+    margin-bottom: 7px;
+}
+.pair {
+    display: table;
+    width: 100%;
+    table-layout: fixed;
+}
+.pair .cell {
+    display: table-cell;
+    vertical-align: top;
+}
+.pair .cell:first-child {
+    padding-right: 8px;
 }
 label {
     display: block;
     font-weight: 600;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
 }
-input.text {
+input.text, select, textarea {
     width: 100%;
     box-sizing: border-box;
-    border: 1px solid #a7b2be;
-    padding: 7px;
+    border: 1px solid #9dacbc;
+    font-family: Segoe UI, Arial, sans-serif;
+    font-size: 13px;
+}
+input.text, select {
+    height: 30px;
+    padding: 5px;
+}
+textarea {
+    padding: 8px;
+    resize: none;
+}
+.codebox {
+    background: #f8fafc;
+    color: #17202a;
     font-family: Consolas, Courier New, monospace;
-    font-size: 13px;
 }
-select {
-    width: 220px;
-    border: 1px solid #a7b2be;
-    padding: 6px;
-    font-size: 13px;
+.params-box {
+    height: 160px;
 }
-select.wide {
+.log-box {
+    position: absolute;
+    top: 50px;
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    width: auto;
+    height: auto;
+}
+/* Summary replaces the raw selected_params.ini preview on the main screen. */
+.summary {
+    border: 1px solid #d5dde5;
+    background: #f8fafc;
+    padding: 8px;
+    margin-bottom: 8px;
+}
+.summary-row {
+    display: table;
     width: 100%;
+    table-layout: fixed;
+    margin-bottom: 5px;
+}
+.summary-name {
+    display: table-cell;
+    width: 145px;
+    color: #53616f;
+    font-weight: 600;
+}
+.summary-value {
+    display: table-cell;
+    font-family: Consolas, Courier New, monospace;
+    overflow-wrap: break-word;
+    word-wrap: break-word;
 }
 .checks label {
     font-weight: 400;
-    margin: 7px 0;
+    margin: 5px 0;
 }
-.buttons {
+.right-panel .checks {
+    border-top: 1px solid #d5dde5;
+    margin-top: 10px;
+    padding-top: 8px;
+}
+.right-panel .checks .section-title {
+    margin-top: 0;
+}
+.danger {
+    color: #9a3412;
+    font-weight: 700;
+}
+.button-row {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
     text-align: right;
-    padding-top: 6px;
 }
 button {
-    min-width: 118px;
-    padding: 8px 12px;
-    border: 1px solid #7c8794;
-    background: #e8edf3;
-    color: #1f2933;
+    min-width: 108px;
+    height: 34px;
+    margin-left: 6px;
+    padding: 6px 10px;
+    border: 1px solid #7d8a98;
+    border-radius: 4px;
+    background: #e8edf2;
+    color: #17202a;
     font-weight: 600;
     cursor: pointer;
 }
@@ -95,25 +223,50 @@ button.primary {
     color: #ffffff;
 }
 button:disabled {
-    background: #d7dde5;
-    border-color: #bac3cc;
-    color: #7a8591;
+    background: #d9e0e7;
+    border-color: #bdc7d0;
+    color: #7b8793;
     cursor: default;
 }
-#statusBox {
-    min-height: 42px;
-    border: 1px solid #c7d0da;
-    background: #f8fafc;
-    padding: 10px;
-    white-space: pre-wrap;
+.progress-header {
+    display: table;
+    width: 100%;
+    margin-bottom: 8px;
 }
-.danger {
-    color: #9a3412;
-    font-weight: 600;
+.progress-label {
+    display: table-cell;
+    font-weight: 700;
 }
-.envline {
+.progress-percent {
+    display: table-cell;
+    width: 70px;
+    text-align: right;
     font-family: Consolas, Courier New, monospace;
-    overflow-wrap: break-word;
+}
+.progress-track {
+    height: 22px;
+    border: 1px solid #9dacbc;
+    background: #edf2f7;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.progress-fill {
+    width: 0%;
+    height: 22px;
+    background: #1f7fbd;
+}
+.progress-fill.success {
+    background: #237a3b;
+}
+.progress-fill.failed {
+    background: #b42318;
+}
+#statusBox {
+    margin-top: 6px;
+    color: #354252;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 </style>
 <script language="JScript" type="text/javascript">
@@ -125,16 +278,29 @@ var htaDir = "";
 var htaLogPath = "";
 var paramsPath = "";
 var exitCodePath = "";
+var applyDetailPath = "";
+var applyLogPath = "";
+var diskpartLogPath = "";
+var applyStatePath = "";
+var applyRcPath = "";
 var exitCodeWritten = false;
 var deploymentStarted = false;
+var applyRunning = false;
 var diskInventory = {};
+var deployStartTime = null;
+var pollTimer = null;
+var elapsedTimer = null;
+var lastProgress = 0;
+var lastLogText = "";
 
 function byId(id) {
     return document.getElementById(id);
 }
 
 function setStatus(message) {
-    byId("statusBox").innerText = message;
+    if (byId("statusBox")) {
+        byId("statusBox").innerText = message;
+    }
 }
 
 function getHtaDirectory() {
@@ -154,6 +320,9 @@ function trimText(value) {
 }
 
 function combinePath(left, right) {
+    if (!left) {
+        return right;
+    }
     if (left.charAt(left.length - 1) == "\\") {
         return left + right;
     }
@@ -183,6 +352,33 @@ function appendTextFile(path, text) {
     var file = fso.OpenTextFile(path, 8, true);
     file.Write(text);
     file.Close();
+}
+
+function readTextFile(path) {
+    if (!fso.FileExists(path)) {
+        return "";
+    }
+    var file = fso.OpenTextFile(path, 1, false);
+    var text = file.ReadAll();
+    file.Close();
+    return text;
+}
+
+function readTail(path, maxChars) {
+    var text = readTextFile(path);
+    if (text.length > maxChars) {
+        return "... log truncated to last " + maxChars + " characters ...\r\n" + text.substring(text.length - maxChars);
+    }
+    return text;
+}
+
+function deleteFileIfExists(path) {
+    try {
+        if (path && fso.FileExists(path)) {
+            fso.DeleteFile(path, true);
+        }
+    } catch (e) {
+    }
 }
 
 function nowText() {
@@ -235,17 +431,23 @@ function inferFallbackEnv() {
 
 function preparePaths() {
     var htaDetail = combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta");
+    applyDetailPath = combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage");
     htaLogPath = combinePath(htaDetail, "deploy_hta.log");
     paramsPath = combinePath(htaDetail, "selected_params.ini");
     exitCodePath = combinePath(htaDetail, "hta_exit_code.txt");
+    applyLogPath = combinePath(applyDetailPath, "applyimage.log");
+    diskpartLogPath = combinePath(applyDetailPath, "diskpart.log");
+    applyStatePath = combinePath(applyDetailPath, "applyimage.state.ini");
+    applyRcPath = combinePath(applyDetailPath, "applyimage.returncode.txt");
 }
 
 function setEnvironmentInfo() {
-    if (!byId("runIdValue") || !byId("logDirValue")) {
-        return;
+    if (byId("runIdValue")) {
+        byId("runIdValue").innerText = deployEnv.RUNID ? deployEnv.RUNID : "(not loaded)";
     }
-    byId("runIdValue").innerText = deployEnv.RUNID ? deployEnv.RUNID : "(not loaded)";
-    byId("logDirValue").innerText = deployEnv.LOGDIR ? deployEnv.LOGDIR : "(not loaded)";
+    if (byId("logDirValue")) {
+        byId("logDirValue").innerText = deployEnv.LOGDIR ? deployEnv.LOGDIR : "(not loaded)";
+    }
 }
 
 function readDeployEnv() {
@@ -301,18 +503,41 @@ function handleWindowUnload() {
 
 function updateDeployState() {
     var disk = trimText(byId("targetDisk").value);
-
     var ready = envLoaded &&
         disk != "" &&
         diskInventory[disk] &&
         byId("confirmWim").checked &&
         byId("confirmDisk").checked &&
         byId("confirmRecovery").checked;
+
+    if (deploymentStarted) {
+        ready = false;
+    }
     byId("deployButton").disabled = !ready;
+    byId("cancelButton").disabled = deploymentStarted;
+}
+
+function updateSummary() {
+    var diskInfo = getSelectedDiskInfo();
+    var diskText = diskInfo.number ? diskInfoText(diskInfo) : "(not selected)";
+    var wimText = getEffectiveWimPath();
+    var recoveryText = trimText(byId("recoverySize").value);
+
+    if (byId("summaryDisk")) {
+        byId("summaryDisk").innerText = diskText;
+    }
+    if (byId("summaryWim")) {
+        byId("summaryWim").innerText = wimText ? wimText : "(not selected)";
+    }
+    if (byId("summaryRecovery")) {
+        byId("summaryRecovery").innerText = recoveryText ? recoveryText + " MB" : "(not selected)";
+    }
+    updateElapsed();
 }
 
 function resetConfirmation(confirmId) {
     byId(confirmId).checked = false;
+    updateSummary();
     updateDeployState();
 }
 
@@ -473,7 +698,7 @@ function refreshTargetDisks() {
 
     if (diskInventory["0"]) {
         selectObj.value = "0";
-        setStatus("Target disks refreshed.\r\nDetected target: " + diskInfoText(diskInventory["0"]));
+        setStatus("Target disks refreshed. Detected target: " + diskInfoText(diskInventory["0"]));
         logMessage("Disk 0 selected automatically: " + diskInfoText(diskInventory["0"]));
     } else {
         selectObj.value = "";
@@ -482,6 +707,7 @@ function refreshTargetDisks() {
     }
     logMessage("Target disk list refreshed. Eligible disk count=" + eligibleCount + ".");
     resetConfirmation("confirmDisk");
+    updateSummary();
     return true;
 }
 
@@ -510,9 +736,9 @@ function diskInfoText(diskInfo) {
 
 function startupDiskStatus(prefix) {
     if (diskInventory["0"]) {
-        return prefix + "\r\nDisk 0 detected and selected.\r\n" + diskInfoText(diskInventory["0"]);
+        return prefix + " Disk 0 detected and selected.";
     }
-    return prefix + "\r\nDisk 0 was not found. Select a target disk manually.";
+    return prefix + " Disk 0 was not found. Select a target disk manually.";
 }
 
 function handleTargetDiskChanged() {
@@ -521,11 +747,12 @@ function handleTargetDiskChanged() {
     var prefix = envLoaded ? "Target disk selected." : "DeployEnv.cmd could not be read. Deployment is disabled.";
 
     if (diskInfo.number != "") {
-        setStatus(prefix + "\r\nSelected target:\r\n" + diskInfoText(diskInfo));
+        setStatus(prefix + " Selected target: " + diskInfoText(diskInfo));
         logSelectedDisk("Target disk changed.");
     } else {
-        setStatus(prefix + "\r\nSelect a target disk.");
+        setStatus(prefix + " Select a target disk.");
     }
+    updateSummary();
 }
 
 function getEffectiveWimPath() {
@@ -573,7 +800,7 @@ function validateInputs() {
         return false;
     }
     if (!fso.FileExists(wimPath)) {
-        setStatus("WIM file does not exist:\r\n" + wimPath);
+        setStatus("WIM file does not exist: " + wimPath);
         return false;
     }
     if (trimText(byId("targetDisk").value) == "") {
@@ -607,32 +834,256 @@ function validateInputs() {
     return true;
 }
 
-function writeParams() {
-    var diskInfo = getSelectedDiskInfo();
+function buildParamsText() {
     var text = "";
     text += "WIM_PATH=" + getEffectiveWimPath() + "\r\n";
     text += "TARGET_DISK=" + trimText(byId("targetDisk").value) + "\r\n";
     text += "RECOVERY_SIZE_MB=" + trimText(byId("recoverySize").value) + "\r\n";
     text += "IMAGE_INDEX=" + trimText(byId("imageIndex").value) + "\r\n";
+    return text;
+}
+
+function writeParams() {
+    var diskInfo = getSelectedDiskInfo();
+    var text = buildParamsText();
+    ensureFolder(fso.GetParentFolderName(paramsPath));
     writeTextFile(paramsPath, text);
     logMessage("Selected target disk: Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model);
     logMessage("Wrote selected_params.ini to " + paramsPath);
+}
+
+function setInputsDisabled(disabled) {
+    var ids = ["wimPath", "customWimPath", "targetDisk", "recoverySize", "imageIndex", "confirmWim", "confirmDisk", "confirmRecovery"];
+    for (var i = 0; i < ids.length; i++) {
+        if (byId(ids[i])) {
+            byId(ids[i]).disabled = disabled;
+        }
+    }
 }
 
 function quotePath(path) {
     return "\"" + path + "\"";
 }
 
-function runApplyImage() {
+function runApplyImageAsync() {
     var applyPath = combinePath(deployEnv.WORKDIR, "ApplyImage.bat");
     if (!fso.FileExists(applyPath)) {
         logMessage("ApplyImage.bat not found at " + applyPath);
-        setStatus("ApplyImage.bat was not found:\r\n" + applyPath);
-        return 30;
+        setStatus("ApplyImage.bat was not found: " + applyPath);
+        return false;
     }
-    var command = "cmd.exe /d /c " + quotePath(quotePath(applyPath) + " " + quotePath(paramsPath));
-    logMessage("Running ApplyImage.bat.");
-    return shell.Run(command, 1, true);
+    var command = "cmd.exe /d /v:on /c \"\"" + applyPath + "\" \"" + paramsPath + "\" & >\"" + applyRcPath + "\" echo !ERRORLEVEL!\"";
+    logMessage("Starting ApplyImage.bat asynchronously.");
+    shell.Run(command, 0, false);
+    return true;
+}
+
+function parseKeyValueText(text) {
+    var result = {};
+    var lines = text.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+        var line = trimText(lines[i]);
+        var pos = line.indexOf("=");
+        if (pos > 0) {
+            result[line.substring(0, pos).toUpperCase()] = line.substring(pos + 1);
+        }
+    }
+    return result;
+}
+
+function readStateFile() {
+    if (!applyStatePath || !fso.FileExists(applyStatePath)) {
+        return {};
+    }
+    try {
+        return parseKeyValueText(readTextFile(applyStatePath));
+    } catch (e) {
+        return {};
+    }
+}
+
+function readReturnCode() {
+    if (!applyRcPath || !fso.FileExists(applyRcPath)) {
+        return "";
+    }
+    return trimText(readTextFile(applyRcPath));
+}
+
+function clampPercent(value) {
+    var percent = parseInt(value, 10);
+    if (isNaN(percent)) {
+        percent = 0;
+    }
+    if (percent < 0) {
+        percent = 0;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+    return percent;
+}
+
+function getLastDismPercent() {
+    var text = readTail(applyLogPath, 60000);
+    var re = /([0-9]{1,3}(?:\.[0-9]+)?)%/g;
+    var match = null;
+    var last = -1;
+    while ((match = re.exec(text)) !== null) {
+        var value = parseFloat(match[1]);
+        if (!isNaN(value) && value >= 0 && value <= 100) {
+            last = value;
+        }
+    }
+    return last;
+}
+
+function updateProgress(percent, label, mode) {
+    percent = clampPercent(percent);
+    lastProgress = percent;
+    byId("progressFill").style.width = percent + "%";
+    byId("progressFill").className = "progress-fill" + (mode ? " " + mode : "");
+    byId("progressLabel").innerText = label;
+    byId("progressPercent").innerText = percent + "%";
+}
+
+function refreshLogView() {
+    if (!byId("logView")) {
+        return;
+    }
+    var text = "";
+    if (htaLogPath && fso.FileExists(htaLogPath)) {
+        text += "===== Deploy.hta =====\r\n" + readTail(htaLogPath, 20000);
+    }
+    if (applyLogPath && fso.FileExists(applyLogPath)) {
+        if (text != "") {
+            text += "\r\n";
+        }
+        text += "===== ApplyImage.bat / DISM =====\r\n" + readTail(applyLogPath, 60000);
+    }
+    if (diskpartLogPath && fso.FileExists(diskpartLogPath)) {
+        if (text != "") {
+            text += "\r\n";
+        }
+        text += "===== DiskPart =====\r\n" + readTail(diskpartLogPath, 30000);
+    }
+    if (text == "") {
+        text = "Logs will appear here after DeployEnv.cmd is loaded.";
+    }
+    if (text != lastLogText) {
+        byId("logView").value = text;
+        byId("logView").scrollTop = byId("logView").scrollHeight;
+        lastLogText = text;
+    }
+}
+
+function resizeLogArea() {
+    if (!byId("logView") || !byId("logPanel")) {
+        return;
+    }
+    // HTA uses the IE layout engine; explicit sizing avoids textarea clipping.
+    var panelHeight = byId("logPanel").clientHeight;
+    var logHeight = panelHeight - 46;
+    if (logHeight < 120) {
+        logHeight = 120;
+    }
+    byId("logView").style.height = logHeight + "px";
+    byId("logView").style.width = (byId("logPanel").clientWidth - 20) + "px";
+}
+
+function formatElapsed(seconds) {
+    if (seconds < 0 || isNaN(seconds)) {
+        seconds = 0;
+    }
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    function pad(v) {
+        return (v < 10 ? "0" : "") + v;
+    }
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
+}
+
+function updateElapsed() {
+    var text = "00:00:00";
+    if (deployStartTime) {
+        var seconds = Math.floor((new Date().getTime() - deployStartTime.getTime()) / 1000);
+        text = formatElapsed(seconds);
+    }
+    if (byId("summaryElapsed")) {
+        byId("summaryElapsed").innerText = text;
+    }
+}
+
+function startTimers() {
+    if (pollTimer) {
+        window.clearInterval(pollTimer);
+    }
+    if (elapsedTimer) {
+        window.clearInterval(elapsedTimer);
+    }
+    pollTimer = window.setInterval("pollDeployment()", 1000);
+    elapsedTimer = window.setInterval("updateElapsed()", 1000);
+}
+
+function stopTimers() {
+    if (pollTimer) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+    }
+    if (elapsedTimer) {
+        window.clearInterval(elapsedTimer);
+        elapsedTimer = null;
+    }
+}
+
+function pollDeployment() {
+    var state = readStateFile();
+    var stage = state.STAGE ? state.STAGE : "RUNNING";
+    var message = state.MESSAGE ? state.MESSAGE : "ApplyImage.bat is running.";
+    var percent = state.PERCENT ? clampPercent(state.PERCENT) : lastProgress;
+    var dismPercent = -1;
+    var label = stage + " - " + message;
+
+    if (stage == "APPLY_WIM") {
+        dismPercent = getLastDismPercent();
+        if (dismPercent >= 0) {
+            percent = 55 + Math.round(dismPercent * 0.30);
+            if (percent > 85) {
+                percent = 85;
+            }
+            label = "APPLY_WIM - " + message + " DISM " + dismPercent + "%";
+        }
+    }
+
+    updateProgress(percent, label, "");
+    setStatus(label);
+    refreshLogView();
+
+    var rcText = readReturnCode();
+    if (rcText != "") {
+        completeDeployment(parseInt(rcText, 10));
+    }
+}
+
+function completeDeployment(rc) {
+    if (isNaN(rc)) {
+        rc = 90;
+    }
+    applyRunning = false;
+    stopTimers();
+    refreshLogView();
+    writeExitCode(rc, true);
+
+    if (rc == 0) {
+        logMessage("ApplyImage.bat completed successfully.");
+        updateProgress(100, "SUCCESS - Deployment completed successfully.", "success");
+        setStatus("Deployment completed successfully. Return code: 0.");
+    } else {
+        logMessage("ApplyImage.bat failed with return code " + rc + ".");
+        updateProgress(lastProgress, "FAILED - Return code " + rc + ". Review deployment logs.", "failed");
+        setStatus("Deployment failed. Return code: " + rc + ". Review deployment logs before retrying.");
+    }
+    byId("closeButton").style.display = "inline-block";
 }
 
 function startDeployment() {
@@ -660,50 +1111,80 @@ function startDeployment() {
         }
 
         ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
-        ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
+        ensureFolder(applyDetailPath);
+        deleteFileIfExists(applyStatePath);
+        deleteFileIfExists(applyRcPath);
         logMessage("Deployment confirmed by operator.");
         writeParams();
-        setStatus("Deployment is running. Do not close this window.");
+
+        deploymentStarted = true;
+        applyRunning = true;
+        deployStartTime = new Date();
+        setInputsDisabled(true);
         byId("deployButton").disabled = true;
         byId("cancelButton").disabled = true;
-
+        byId("closeButton").style.display = "none";
         writeExitCode(90, true);
-        deploymentStarted = true;
-        rc = 90;
-        rc = runApplyImage();
-        writeExitCode(rc, true);
+        updateProgress(3, "STARTING - Launching ApplyImage.bat.", "");
+        setStatus("Deployment is running. Do not close this window.");
+        refreshLogView();
 
-        if (rc == 0) {
-            logMessage("ApplyImage.bat completed successfully.");
-            setStatus("Deployment completed successfully.\r\nReturn code: 0\r\nClose this window to continue.");
-        } else {
-            logMessage("ApplyImage.bat failed with return code " + rc + ".");
-            setStatus("Deployment failed.\r\nReturn code: " + rc + "\r\nReview deployment logs before retrying.");
+        if (!runApplyImageAsync()) {
+            rc = 30;
+            writeTextFile(applyRcPath, String(rc) + "\r\n");
+            completeDeployment(rc);
+            return;
         }
-        byId("closeButton").style.display = "inline-block";
+
+        startTimers();
+        pollDeployment();
     } catch (e) {
         logMessage("HTA error: " + e.message);
         if (!deploymentStarted) {
             rc = 30;
+        } else {
+            rc = 90;
         }
         writeExitCode(rc, true);
-        setStatus("Deployment UI failed.\r\nReturn code: " + rc + "\r\nError: " + e.message);
+        updateProgress(lastProgress, "FAILED - HTA error.", "failed");
+        setStatus("Deployment UI failed. Return code: " + rc + ". Error: " + e.message);
         byId("closeButton").style.display = "inline-block";
     }
 }
 
 function cancelDeployment() {
+    if (deploymentStarted) {
+        return;
+    }
     writeExitCode(10, false);
     logMessage("Operator cancelled deployment.");
     window.close();
 }
 
+function shutdownComputer() {
+    if (!window.confirm("Shutdown this computer now?")) {
+        return;
+    }
+    logMessage("Operator requested shutdown.");
+    try {
+        shell.Run("wpeutil shutdown", 0, false);
+    } catch (e) {
+        shell.Run("shutdown.exe /s /t 0", 0, false);
+    }
+}
+
+function openCommandLine() {
+    logMessage("Operator opened command line.");
+    shell.Run("cmd.exe", 1, false);
+}
+
 function init() {
     byId("wimPath").value = "Z:\\Images\\Install.wim";
     byId("customWimPath").value = "";
-    updateWimCustomState();
     byId("recoverySize").value = "1536";
     byId("imageIndex").value = "1";
+    updateWimCustomState();
+    updateProgress(0, "READY - Waiting for deployment parameters.", "");
 
     try {
         envLoaded = readDeployEnv();
@@ -718,6 +1199,7 @@ function init() {
             logMessage("DeployEnv.cmd read failed: " + envReadError);
         } catch (inner) {
             setStatus("DeployEnv.cmd could not be read. Deployment is disabled.");
+            updateSummary();
             updateDeployState();
             return;
         }
@@ -728,94 +1210,145 @@ function init() {
             refreshTargetDisks();
             setStatus(startupDiskStatus("DeployEnv.cmd could not be read. Deployment is disabled."));
         } catch (diskError) {
-            setStatus("DeployEnv.cmd could not be read. Deployment is disabled.\r\nDisk scan failed: " + diskError.message);
+            setStatus("DeployEnv.cmd could not be read. Deployment is disabled. Disk scan failed: " + diskError.message);
             logMessage("Startup disk scan failed: " + diskError.message);
         }
     } else {
         try {
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
-            ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
+            ensureFolder(applyDetailPath);
             logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
             if (refreshTargetDisks()) {
                 setStatus(startupDiskStatus("Ready."));
             }
         } catch (e) {
             envLoaded = false;
-            setStatus("Log directory could not be prepared. Deployment is disabled.\r\n" + e.message);
+            setStatus("Log directory could not be prepared. Deployment is disabled. " + e.message);
             writeExitCode(30, true);
         }
     }
+    setEnvironmentInfo();
+    updateSummary();
+    resizeLogArea();
+    refreshLogView();
     updateDeployState();
 }
 </script>
 </head>
-<body onload="init()" onunload="handleWindowUnload()">
-<div class="wrap">
-    <div class="header">
-        <h1>WinPE Deployment Tool</h1>
-        <div class="subtle">Review deployment inputs before applying the image.</div>
+<body onload="init()" onresize="resizeLogArea()" onunload="handleWindowUnload()">
+<div class="app">
+    <!-- Top layer: parameter input on the left, operator summary/actions on the right. -->
+    <div class="top-layer">
+        <div class="panel left-panel">
+            <div class="title-row">
+                <h1>WinOS Deployment Tool</h1>
+                <div class="subtle">RunID: <span id="runIdValue">(not loaded)</span></div>
+                <div class="subtle">LOGDIR: <span id="logDirValue">(not loaded)</span></div>
+            </div>
+
+            <div class="pair">
+                <div class="cell">
+                    <div class="row">
+                        <label for="wimPath">Target WIM file</label>
+                        <select id="wimPath" onchange="updateWimCustomState()">
+                            <option value="Z:\Images\Install.wim">Z:\Images\Install.wim</option>
+                            <option value="Z:\Images\install.wim">Z:\Images\install.wim</option>
+                            <option value="__CUSTOM__">Other/custom path</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="cell">
+                    <div class="row">
+                        <label for="customWimPath">Custom WIM file</label>
+                        <input class="text" type="text" id="customWimPath" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
+                    </div>
+                </div>
+            </div>
+
+            <div class="pair">
+                <div class="cell">
+                    <div class="row">
+                        <label for="targetDisk">Target disk</label>
+                        <select id="targetDisk" onchange="handleTargetDiskChanged()">
+                            <option value="">Scanning local disks...</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="cell">
+                    <div class="row">
+                        <label for="recoverySize">Recovery partition</label>
+                        <select id="recoverySize" onchange="resetConfirmation('confirmRecovery')">
+                            <option value="1536">1536 MB</option>
+                            <option value="2048">2048 MB</option>
+                            <option value="3072">3072 MB</option>
+                            <option value="4096">4096 MB</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row">
+                <label for="imageIndex">Image index</label>
+                <input class="text" type="text" id="imageIndex" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
+            </div>
+
+        </div>
+
+        <div class="panel right-panel">
+            <!-- Deployment summary mirrors the effective parameters without exposing raw INI text. -->
+            <div class="section-title">Deployment summary</div>
+            <div class="summary">
+                <div class="summary-row">
+                    <div class="summary-name">Target WIM file</div>
+                    <div class="summary-value" id="summaryWim">(not selected)</div>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-name">Target disk</div>
+                    <div class="summary-value" id="summaryDisk">(not selected)</div>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-name">Recovery size</div>
+                    <div class="summary-value" id="summaryRecovery">(not selected)</div>
+                </div>
+                <div class="summary-row">
+                    <div class="summary-name">Elapsed</div>
+                    <div class="summary-value" id="summaryElapsed">00:00:00</div>
+                </div>
+            </div>
+
+            <div class="checks">
+                <div class="section-title danger">Required confirmations</div>
+                <label><input type="checkbox" id="confirmWim" onclick="updateDeployState()" /> WIM path confirmed</label>
+                <label><input type="checkbox" id="confirmDisk" onclick="updateDeployState()" /> Target disk clean confirmed</label>
+                <label><input type="checkbox" id="confirmRecovery" onclick="updateDeployState()" /> Recovery partition size confirmed</label>
+            </div>
+
+            <div class="button-row">
+                <button id="commandButton" onclick="openCommandLine()">Command Line</button>
+                <button id="shutdownButton" onclick="shutdownComputer()">Shutdown</button>
+                <button id="cancelButton" onclick="cancelDeployment()">Cancel</button>
+                <button id="deployButton" class="primary" onclick="startDeployment()" disabled>Start Apply</button>
+                <button id="closeButton" onclick="window.close()" style="display:none">Close</button>
+            </div>
+        </div>
     </div>
 
-    <div class="panel">
-        <div class="row">
-            <label>RUNID</label>
-            <div class="envline" id="runIdValue">(not loaded)</div>
+    <!-- Middle layer: stage progress plus DISM percentage when Apply-Image is running. -->
+    <div class="panel middle-layer">
+        <div class="progress-header">
+            <div class="progress-label" id="progressLabel">READY</div>
+            <div class="progress-percent" id="progressPercent">0%</div>
         </div>
-        <div class="row">
-            <label>LOGDIR</label>
-            <div class="envline" id="logDirValue">(not loaded)</div>
+        <div class="progress-track">
+            <div id="progressFill" class="progress-fill"></div>
         </div>
-    </div>
-
-    <div class="panel">
-        <div class="row">
-            <label for="wimPath">WIM path</label>
-            <select class="wide" id="wimPath" onchange="updateWimCustomState()">
-                <option value="Z:\Images\Install.wim">Z:\Images\Install.wim</option>
-                <option value="Z:\Images\install.wim">Z:\Images\install.wim</option>
-                <option value="__CUSTOM__">Other/custom path</option>
-            </select>
-        </div>
-        <div class="row">
-            <label for="customWimPath">Custom WIM path</label>
-            <input class="text" type="text" id="customWimPath" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
-        </div>
-        <div class="row">
-            <label for="targetDisk">Target disk</label>
-            <select class="wide" id="targetDisk" onchange="handleTargetDiskChanged()">
-                <option value="">Scanning local disks...</option>
-            </select>
-        </div>
-        <div class="row">
-            <label for="recoverySize">Recovery partition size (MB)</label>
-            <select id="recoverySize" onchange="resetConfirmation('confirmRecovery')">
-                <option value="1536">1536 MB</option>
-                <option value="2048">2048 MB</option>
-                <option value="3072">3072 MB</option>
-                <option value="4096">4096 MB</option>
-            </select>
-        </div>
-        <div class="row">
-            <label for="imageIndex">Image index</label>
-            <input class="text" type="text" id="imageIndex" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
-        </div>
-    </div>
-
-    <div class="panel checks">
-        <div class="danger">Required confirmations</div>
-        <label><input type="checkbox" id="confirmWim" onclick="updateDeployState()" /> I confirmed this WIM path.</label>
-        <label><input type="checkbox" id="confirmDisk" onclick="updateDeployState()" /> I confirmed this disk will be cleaned.</label>
-        <label><input type="checkbox" id="confirmRecovery" onclick="updateDeployState()" /> I confirmed this recovery partition size.</label>
-    </div>
-
-    <div class="panel">
-        <label>Status</label>
         <div id="statusBox">Initializing...</div>
-        <div class="buttons">
-            <button id="cancelButton" onclick="cancelDeployment()">Cancel</button>
-            <button id="deployButton" class="primary" onclick="startDeployment()" disabled>Deploy</button>
-            <button id="closeButton" onclick="window.close()" style="display:none">Close</button>
-        </div>
+    </div>
+
+    <!-- Bottom layer: live combined HTA, ApplyImage, DISM, and DiskPart logs. -->
+    <div class="panel bottom-layer" id="logPanel">
+        <div class="section-title">Detailed deployment log</div>
+        <textarea id="logView" class="codebox log-box" readonly></textarea>
     </div>
 </div>
 </body>

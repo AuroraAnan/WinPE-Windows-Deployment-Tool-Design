@@ -1,5 +1,18 @@
 {
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 500,
   "files.associations": {
     "*.hta": "html"
+  },
+  "files.watcherExclude": {
+    "**/Startnet.cmd": false,
+    "**/Deploy.hta": false,
+    "**/ApplyImage.bat": false
+  },
+  "git.autorefresh": true,
+  "git.autofetch": true,
+  "explorer.autoReveal": true,
+  "explorer.autoRevealExclude": {
+    "**/.git": true
   }
 }
