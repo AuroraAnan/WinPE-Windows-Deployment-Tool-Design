@@ -335,130 +335,152 @@ function addOption(selectObj, value, text) {
     return option;
 }
 
+function safeText(value) {
+    if (value === null || typeof(value) == "undefined") {
+        return "";
+    }
+    return String(value);
+}
+
 function bytesToGbText(sizeValue) {
     var bytes = parseFloat(sizeValue);
     if (isNaN(bytes) || bytes <= 0) {
         return "UnknownGB";
     }
-    return Math.round(bytes / 1073741824) + "GB";
+    return (Math.round((bytes / 1073741824) * 10) / 10) + "GB";
 }
 
-function normalizeBusType(value) {
+function normalizeInterfaceType(value) {
     var text = trimText(value);
-    var busMap = {
-        "0": "Unknown",
-        "1": "SCSI",
-        "2": "ATAPI",
-        "3": "ATA",
-        "4": "IEEE1394",
-        "5": "SSA",
-        "6": "Fibre Channel",
-        "7": "USB",
-        "8": "RAID",
-        "9": "iSCSI",
-        "10": "SAS",
-        "11": "SATA",
-        "12": "SD",
-        "13": "MMC",
-        "14": "Virtual",
-        "15": "File Backed Virtual",
-        "16": "Storage Spaces",
-        "17": "NVMe"
-    };
-    if (busMap[text]) {
-        return busMap[text];
+    if (text == "") {
+        return "Unknown";
     }
-    return text == "" ? "Unknown" : text;
+    return text;
 }
 
-function isExcludedDisk(busType, mediaType, model) {
-    var bus = normalizeBusType(busType).toUpperCase();
+function getDiskExcludeReason(interfaceType, mediaType, model, pnpDeviceId) {
+    var bus = normalizeInterfaceType(interfaceType).toUpperCase();
     var media = trimText(mediaType).toUpperCase();
     var diskModel = trimText(model).toUpperCase();
-    if (bus == "USB" || bus == "SD" || bus == "MMC" || bus == "IEEE1394") {
-        return true;
+    var pnp = trimText(pnpDeviceId).toUpperCase();
+
+    if (bus == "USB") {
+        return "InterfaceType=USB";
+    }
+    if (bus == "SD" || bus == "MMC" || bus == "IEEE1394") {
+        return "InterfaceType=" + bus;
     }
     if (media.indexOf("REMOVABLE") >= 0) {
-        return true;
+        return "MediaType contains REMOVABLE";
     }
-    if (diskModel.indexOf(" USB ") >= 0 || diskModel.indexOf("USB DISK") >= 0) {
-        return true;
+    if (pnp.indexOf("USBSTOR") >= 0) {
+        return "PNPDeviceID contains USBSTOR";
     }
-    return false;
+    if (pnp.indexOf("USB\\") >= 0) {
+        return "PNPDeviceID contains USB\\";
+    }
+    if (diskModel.indexOf("USB DISK") >= 0 || diskModel.indexOf("USB FLASH") >= 0 || diskModel.indexOf("CARD READER") >= 0) {
+        return "Model indicates USB/removable media";
+    }
+    return "";
 }
 
-function addDiskOption(index, sizeBytes, model, busType, mediaType) {
+function addDiskOption(index, sizeBytes, model, interfaceType, mediaType, pnpDeviceId) {
     var diskNumber = trimText(index);
-    if (diskNumber == "" || isExcludedDisk(busType, mediaType, model)) {
-        return;
+    var diskModel = trimText(model) == "" ? "Unknown model" : trimText(model);
+    var diskSizeGb = bytesToGbText(sizeBytes);
+    var diskInterface = normalizeInterfaceType(interfaceType);
+    var diskMedia = trimText(mediaType);
+    var diskPnp = trimText(pnpDeviceId);
+
+    logMessage(
+        "Win32_DiskDrive raw: Index=" + diskNumber +
+        ", Model=" + diskModel +
+        ", Size=" + safeText(sizeBytes) +
+        ", SizeGB=" + diskSizeGb +
+        ", InterfaceType=" + diskInterface +
+        ", MediaType=" + diskMedia +
+        ", PNPDeviceID=" + diskPnp
+    );
+
+    if (diskNumber == "") {
+        logMessage("Disk entry excluded: missing Index.");
+        return false;
+    }
+
+    var excludeReason = getDiskExcludeReason(diskInterface, diskMedia, diskModel, diskPnp);
+    if (excludeReason != "") {
+        logMessage("Disk " + diskNumber + " excluded: " + excludeReason + ".");
+        return false;
     }
 
     var diskInfo = {
         number: diskNumber,
-        sizeGb: bytesToGbText(sizeBytes),
-        model: trimText(model) == "" ? "Unknown model" : trimText(model),
-        busType: normalizeBusType(busType),
-        mediaType: trimText(mediaType)
+        sizeGb: diskSizeGb,
+        model: diskModel,
+        interfaceType: diskInterface,
+        mediaType: diskMedia,
+        pnpDeviceId: diskPnp
     };
     diskInventory[diskNumber] = diskInfo;
 
-    var optionText = "Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType;
+    var optionText = "Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model;
     addOption(byId("targetDisk"), diskInfo.number, optionText);
-}
-
-function enumerateDisksFromStorageWmi() {
-    var service = GetObject("winmgmts:{impersonationLevel=impersonate}!\\\\.\\root\\microsoft\\windows\\storage");
-    var disks = new Enumerator(service.ExecQuery("SELECT Number, FriendlyName, Size, BusType, MediaType FROM MSFT_Disk"));
-    var count = 0;
-    for (; !disks.atEnd(); disks.moveNext()) {
-        var disk = disks.item();
-        addDiskOption(disk.Number, disk.Size, disk.FriendlyName, disk.BusType, disk.MediaType);
-        count++;
-    }
-    return count;
+    logMessage("Disk " + diskNumber + " added as eligible target.");
+    return true;
 }
 
 function enumerateDisksFromCimv2() {
-    var service = GetObject("winmgmts:{impersonationLevel=impersonate}!\\\\.\\root\\cimv2");
-    var disks = new Enumerator(service.ExecQuery("SELECT Index, Model, Size, InterfaceType, MediaType FROM Win32_DiskDrive"));
-    var count = 0;
+    var locator = new ActiveXObject("WbemScripting.SWbemLocator");
+    var service = locator.ConnectServer(".", "root\\cimv2");
+    var disks = new Enumerator(service.ExecQuery("SELECT Index, Model, Size, InterfaceType, MediaType, PNPDeviceID FROM Win32_DiskDrive"));
+    var rawCount = 0;
+    var eligibleCount = 0;
+
     for (; !disks.atEnd(); disks.moveNext()) {
         var disk = disks.item();
-        addDiskOption(disk.Index, disk.Size, disk.Model, disk.InterfaceType, disk.MediaType);
-        count++;
+        rawCount++;
+        if (addDiskOption(disk.Index, disk.Size, disk.Model, disk.InterfaceType, disk.MediaType, disk.PNPDeviceID)) {
+            eligibleCount++;
+        }
     }
-    return count;
+
+    logMessage("Win32_DiskDrive enumeration completed: raw=" + rawCount + ", eligible=" + eligibleCount + ".");
+    return eligibleCount;
 }
 
 function refreshTargetDisks() {
     var selectObj = byId("targetDisk");
+    var eligibleCount = 0;
     diskInventory = {};
     clearSelect(selectObj);
+    addOption(selectObj, "", "");
 
     try {
-        enumerateDisksFromStorageWmi();
+        eligibleCount = enumerateDisksFromCimv2();
     } catch (e) {
-        logMessage("MSFT_Disk enumeration failed: " + e.message);
+        logMessage("Win32_DiskDrive enumeration failed: " + e.message);
     }
 
-    if (selectObj.options.length == 0) {
-        try {
-            enumerateDisksFromCimv2();
-        } catch (fallbackError) {
-            logMessage("Win32_DiskDrive enumeration failed: " + fallbackError.message);
-        }
-    }
-
-    if (selectObj.options.length == 0) {
+    if (eligibleCount == 0) {
+        clearSelect(selectObj);
         addOption(selectObj, "", "No eligible fixed disk found");
-        setStatus("No eligible fixed disk found. USB/removable devices are excluded.");
-        logMessage("No eligible fixed disk found after disk scan.");
+        setStatus("No disk found by Win32_DiskDrive.");
+        logMessage("No eligible fixed disk found after Win32_DiskDrive scan.");
         resetConfirmation("confirmDisk");
         return false;
-    } else {
-        selectObj.value = diskInventory["0"] ? "0" : selectObj.options[0].value;
-        logSelectedDisk("Target disk list refreshed.");
     }
+
+    if (diskInventory["0"]) {
+        selectObj.value = "0";
+        setStatus("Target disks refreshed.\r\nDetected target: " + diskInfoText(diskInventory["0"]));
+        logMessage("Disk 0 selected automatically: " + diskInfoText(diskInventory["0"]));
+    } else {
+        selectObj.value = "";
+        setStatus("Target disks refreshed. Disk 0 was not found. Select a target disk manually.");
+        logMessage("Disk 0 was not found after refresh.");
+    }
+    logMessage("Target disk list refreshed. Eligible disk count=" + eligibleCount + ".");
     resetConfirmation("confirmDisk");
     return true;
 }
@@ -471,16 +493,38 @@ function getSelectedDiskInfo() {
     return {
         number: disk,
         sizeGb: "",
-        model: "",
-        busType: "",
-        mediaType: ""
+        model: ""
     };
 }
 
 function logSelectedDisk(prefix) {
     var diskInfo = getSelectedDiskInfo();
     if (diskInfo.number != "") {
-        logMessage(prefix + " Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType);
+        logMessage(prefix + " Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model);
+    }
+}
+
+function diskInfoText(diskInfo) {
+    return "Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model;
+}
+
+function startupDiskStatus(prefix) {
+    if (diskInventory["0"]) {
+        return prefix + "\r\nDisk 0 detected and selected.\r\n" + diskInfoText(diskInventory["0"]);
+    }
+    return prefix + "\r\nDisk 0 was not found. Select a target disk manually.";
+}
+
+function handleTargetDiskChanged() {
+    resetConfirmation("confirmDisk");
+    var diskInfo = getSelectedDiskInfo();
+    var prefix = envLoaded ? "Target disk selected." : "DeployEnv.cmd could not be read. Deployment is disabled.";
+
+    if (diskInfo.number != "") {
+        setStatus(prefix + "\r\nSelected target:\r\n" + diskInfoText(diskInfo));
+        logSelectedDisk("Target disk changed.");
+    } else {
+        setStatus(prefix + "\r\nSelect a target disk.");
     }
 }
 
@@ -507,7 +551,7 @@ function finalConfirm() {
     var imageIndex = trimText(byId("imageIndex").value);
     var message = "Final destructive confirmation\r\n\r\n" +
         "The tool will clean Disk " + disk + ".\r\n" +
-        "Disk details: " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType + "\r\n" +
+        "Disk details: " + diskInfo.sizeGb + " | " + diskInfo.model + "\r\n" +
         "WIM path: " + wimPath + "\r\n" +
         "Image index: " + imageIndex + "\r\n" +
         "Recovery partition size: " + recoverySize + " MB\r\n\r\n" +
@@ -571,7 +615,7 @@ function writeParams() {
     text += "RECOVERY_SIZE_MB=" + trimText(byId("recoverySize").value) + "\r\n";
     text += "IMAGE_INDEX=" + trimText(byId("imageIndex").value) + "\r\n";
     writeTextFile(paramsPath, text);
-    logMessage("Selected target disk: Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model + " | " + diskInfo.busType);
+    logMessage("Selected target disk: Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model);
     logMessage("Wrote selected_params.ini to " + paramsPath);
 }
 
@@ -665,29 +709,35 @@ function init() {
         envLoaded = readDeployEnv();
     } catch (e) {
         envLoaded = false;
+        var envReadError = e.message;
         try {
             htaDir = getHtaDirectory();
             inferFallbackEnv();
             preparePaths();
-            setStatus("DeployEnv.cmd could not be read. Deployment is disabled.\r\n" + e.message);
             writeExitCode(30, true);
-            logMessage("DeployEnv.cmd read failed: " + e.message);
+            logMessage("DeployEnv.cmd read failed: " + envReadError);
         } catch (inner) {
             setStatus("DeployEnv.cmd could not be read. Deployment is disabled.");
+            updateDeployState();
+            return;
         }
-        updateDeployState();
-        return;
     }
     if (!envLoaded) {
-        setStatus("DeployEnv.cmd could not be read. Deployment is disabled.");
         writeExitCode(30, true);
+        try {
+            refreshTargetDisks();
+            setStatus(startupDiskStatus("DeployEnv.cmd could not be read. Deployment is disabled."));
+        } catch (diskError) {
+            setStatus("DeployEnv.cmd could not be read. Deployment is disabled.\r\nDisk scan failed: " + diskError.message);
+            logMessage("Startup disk scan failed: " + diskError.message);
+        }
     } else {
         try {
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "20_applyimage"));
             logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
             if (refreshTargetDisks()) {
-                setStatus("Ready. Review settings and complete all confirmations.");
+                setStatus(startupDiskStatus("Ready."));
             }
         } catch (e) {
             envLoaded = false;
@@ -732,7 +782,7 @@ function init() {
         </div>
         <div class="row">
             <label for="targetDisk">Target disk</label>
-            <select class="wide" id="targetDisk" onchange="resetConfirmation('confirmDisk'); logSelectedDisk('Target disk changed.')">
+            <select class="wide" id="targetDisk" onchange="handleTargetDiskChanged()">
                 <option value="">Scanning local disks...</option>
             </select>
         </div>

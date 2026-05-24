@@ -281,25 +281,49 @@ if errorlevel 1 (
 )
 
 set "TARGET_DISK_WMI_FOUND=0"
-for /f "tokens=1* delims==" %%A in ('wmic diskdrive where "Index=%TARGET_DISK%" get InterfaceType^,MediaType^,Model^,Size /value 2^>nul') do (
+set "TARGET_DISK_WMI_EXCLUDED=0"
+set "TARGET_DISK_WMI_EXCLUDE_REASON="
+for /f "tokens=1* delims==" %%A in ('wmic diskdrive where "Index=%TARGET_DISK%" get InterfaceType^,MediaType^,Model^,PNPDeviceID^,Size /value 2^>nul') do (
     set "WMI_KEY=%%~A"
     set "WMI_VALUE=%%~B"
     if defined WMI_KEY (
         set "TARGET_DISK_WMI_FOUND=1"
-        >> "%DISKPART_LOG%" echo WMI %%~A=%%~B
+        >> "%DISKPART_LOG%" echo WMI !WMI_KEY!=!WMI_VALUE!
         if /i "!WMI_KEY!"=="InterfaceType" (
             set "CHECK_VALUE=!WMI_VALUE!"
-            call :IsExcludedBusType
+            call :IsExcludedInterfaceType
             if errorlevel 1 (
-                call :Log "ERROR: WMI reports target disk InterfaceType is excluded: !WMI_VALUE!"
-                exit /b 1
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=InterfaceType=!WMI_VALUE!"
             )
         )
         if /i "!WMI_KEY!"=="MediaType" (
             set "MEDIA_CHECK=!WMI_VALUE!"
             if /i not "!MEDIA_CHECK:Removable=!"=="!MEDIA_CHECK!" (
-                call :Log "ERROR: WMI reports target disk media is removable: !WMI_VALUE!"
-                exit /b 1
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=MediaType=!WMI_VALUE!"
+            )
+        )
+        if /i "!WMI_KEY!"=="PNPDeviceID" (
+            set "PNP_CHECK=!WMI_VALUE!"
+            if not "!PNP_CHECK:USBSTOR=!"=="!PNP_CHECK!" (
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=PNPDeviceID contains USBSTOR"
+            )
+            if not "!PNP_CHECK:USB\=!"=="!PNP_CHECK!" (
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=PNPDeviceID contains USB\"
+            )
+        )
+        if /i "!WMI_KEY!"=="Model" (
+            set "MODEL_CHECK=!WMI_VALUE!"
+            if /i not "!MODEL_CHECK:USB =!"=="!MODEL_CHECK!" (
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=Model indicates USB/removable media: !WMI_VALUE!"
+            )
+            if /i not "!MODEL_CHECK:CARD READER=!"=="!MODEL_CHECK!" (
+                set "TARGET_DISK_WMI_EXCLUDED=1"
+                set "TARGET_DISK_WMI_EXCLUDE_REASON=Model indicates card reader: !WMI_VALUE!"
             )
         )
     )
@@ -307,6 +331,11 @@ for /f "tokens=1* delims==" %%A in ('wmic diskdrive where "Index=%TARGET_DISK%" 
 
 if not "%TARGET_DISK_WMI_FOUND%"=="1" (
     call :Log "ERROR: WMIC could not find disk index %TARGET_DISK%."
+    exit /b 1
+)
+
+if "%TARGET_DISK_WMI_EXCLUDED%"=="1" (
+    call :Log "ERROR: Target disk %TARGET_DISK% is excluded by WMIC precheck: %TARGET_DISK_WMI_EXCLUDE_REASON%."
     exit /b 1
 )
 
@@ -410,7 +439,7 @@ set "NUMBER_REMAINDER=!NUMBER_REMAINDER:9=!"
 if defined NUMBER_REMAINDER exit /b 1
 exit /b 0
 
-:IsExcludedBusType
+:IsExcludedInterfaceType
 if not defined CHECK_VALUE exit /b 0
 if /i "!CHECK_VALUE!"=="USB" exit /b 1
 if /i "!CHECK_VALUE!"=="SD" exit /b 1
