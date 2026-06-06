@@ -163,6 +163,12 @@ if not errorlevel 1 (
 )
 
 set "WIM_PATH="
+set "WINRE_PATH="
+set "HTA_WINRE_SIZE_BYTES="
+set "HTA_WINRE_SIZE_MB="
+set "WINRE_SIZE_MB="
+set "WINRE_REQUIRED_MB="
+set "CALCULATED_RECOVERY_SIZE_MB="
 set "TARGET_DISK="
 set "RECOVERY_SIZE_MB="
 set "IMAGE_INDEX="
@@ -173,6 +179,9 @@ for /f "usebackq tokens=1* delims==" %%A in ("%PARAM_FILE%") do (
     call :NormalizeIniKey
     call :NormalizeIniValue
     if /i "!INI_KEY!"=="WIM_PATH" set "WIM_PATH=!INI_VALUE!"
+    if /i "!INI_KEY!"=="WINRE_PATH" set "WINRE_PATH=!INI_VALUE!"
+    if /i "!INI_KEY!"=="WINRE_SIZE_BYTES" set "HTA_WINRE_SIZE_BYTES=!INI_VALUE!"
+    if /i "!INI_KEY!"=="WINRE_SIZE_MB" set "HTA_WINRE_SIZE_MB=!INI_VALUE!"
     if /i "!INI_KEY!"=="TARGET_DISK" set "TARGET_DISK=!INI_VALUE!"
     if /i "!INI_KEY!"=="RECOVERY_SIZE_MB" set "RECOVERY_SIZE_MB=!INI_VALUE!"
     if /i "!INI_KEY!"=="IMAGE_INDEX" set "IMAGE_INDEX=!INI_VALUE!"
@@ -199,6 +208,30 @@ if not defined WIM_PATH (
     )
 )
 
+if not defined WINRE_PATH if defined WIM_PATH (
+    for %%I in ("!WIM_PATH!") do set "WINRE_PATH=%%~dpIWinre.wim"
+)
+
+if not defined WINRE_PATH (
+    call :Log "ERROR: WINRE_PATH is missing and could not be derived from WIM_PATH."
+    set "VALIDATION_FAILED=1"
+) else (
+    set "CHECK_VALUE=!WINRE_PATH!"
+    call :ContainsBadChars
+    if errorlevel 1 (
+        call :Log "ERROR: WINRE_PATH contains invalid characters."
+        set "VALIDATION_FAILED=1"
+    ) else if not exist "!WINRE_PATH!" (
+        call :Log "ERROR: WINRE_PATH does not exist: !WINRE_PATH!"
+        set "VALIDATION_FAILED=1"
+    ) else (
+        call :CalculateRecoverySizeFromWinre
+        if errorlevel 1 (
+            set "VALIDATION_FAILED=1"
+        )
+    )
+)
+
 if not defined TARGET_DISK (
     call :Log "ERROR: TARGET_DISK is missing."
     set "VALIDATION_FAILED=1"
@@ -219,8 +252,12 @@ if not defined TARGET_DISK (
 )
 
 if not defined RECOVERY_SIZE_MB (
-    call :Log "ERROR: RECOVERY_SIZE_MB is missing."
-    set "VALIDATION_FAILED=1"
+    if defined CALCULATED_RECOVERY_SIZE_MB (
+        set "RECOVERY_SIZE_MB=!CALCULATED_RECOVERY_SIZE_MB!"
+    ) else (
+        call :Log "ERROR: RECOVERY_SIZE_MB is missing and WinRE recovery size was not calculated."
+        set "VALIDATION_FAILED=1"
+    )
 ) else (
     set "CHECK_VALUE=!RECOVERY_SIZE_MB!"
     call :ContainsBadChars
@@ -233,9 +270,13 @@ if not defined RECOVERY_SIZE_MB (
         if errorlevel 1 (
             call :Log "ERROR: RECOVERY_SIZE_MB must be numeric."
             set "VALIDATION_FAILED=1"
-        ) else if !RECOVERY_SIZE_MB! LSS 1536 (
-            call :Log "ERROR: RECOVERY_SIZE_MB must be at least 1536."
-            set "VALIDATION_FAILED=1"
+        ) else (
+            if defined CALCULATED_RECOVERY_SIZE_MB (
+                if not "!RECOVERY_SIZE_MB!"=="!CALCULATED_RECOVERY_SIZE_MB!" (
+                    call :Log "ERROR: RECOVERY_SIZE_MB !RECOVERY_SIZE_MB! does not match calculated WinRE recovery size !CALCULATED_RECOVERY_SIZE_MB!."
+                    set "VALIDATION_FAILED=1"
+                )
+            )
         )
     )
 )
@@ -259,7 +300,58 @@ if not defined IMAGE_INDEX (
 )
 
 if "%VALIDATION_FAILED%"=="1" exit /b 1
-call :Log "Validated parameters: WIM_PATH=!WIM_PATH!, TARGET_DISK=!TARGET_DISK!, RECOVERY_SIZE_MB=!RECOVERY_SIZE_MB!, IMAGE_INDEX=!IMAGE_INDEX!"
+call :Log "Validated parameters: WIM_PATH=!WIM_PATH!, WINRE_PATH=!WINRE_PATH!, HTA_WINRE_SIZE_BYTES=!HTA_WINRE_SIZE_BYTES!, ACTUAL_WINRE_SIZE_BYTES=!WINRE_SIZE_BYTES!, WINRE_SIZE_MB=!WINRE_SIZE_MB!, WINRE_REQUIRED_MB=!WINRE_REQUIRED_MB!, TARGET_DISK=!TARGET_DISK!, RECOVERY_SIZE_MB=!RECOVERY_SIZE_MB!, IMAGE_INDEX=!IMAGE_INDEX!"
+exit /b 0
+
+:CalculateRecoverySizeFromWinre
+set "WINRE_SIZE_BYTES="
+for %%I in ("!WINRE_PATH!") do set "WINRE_SIZE_BYTES=%%~zI"
+if not defined WINRE_SIZE_BYTES (
+    call :Log "ERROR: Failed to read WinRE WIM file size: !WINRE_PATH!"
+    exit /b 1
+)
+
+set "NUMBER_VALUE=!WINRE_SIZE_BYTES!"
+call :IsNumberValue
+if errorlevel 1 (
+    call :Log "ERROR: WinRE WIM file size is not numeric: !WINRE_SIZE_BYTES!"
+    exit /b 1
+)
+
+if defined HTA_WINRE_SIZE_BYTES (
+    set "NUMBER_VALUE=!HTA_WINRE_SIZE_BYTES!"
+    call :IsNumberValue
+    if errorlevel 1 (
+        call :Log "ERROR: HTA recorded WinRE WIM byte size is not numeric: !HTA_WINRE_SIZE_BYTES!"
+        exit /b 1
+    )
+    if not "!HTA_WINRE_SIZE_BYTES!"=="!WINRE_SIZE_BYTES!" (
+        call :Log "ERROR: WinRE WIM file size changed after HTA detection. HTA=!HTA_WINRE_SIZE_BYTES!, Actual=!WINRE_SIZE_BYTES!."
+        exit /b 1
+    )
+)
+
+set "WINRE_TOO_LARGE=0"
+if not "!WINRE_SIZE_BYTES:~10,1!"=="" set "WINRE_TOO_LARGE=1"
+if "!WINRE_TOO_LARGE!"=="0" if not "!WINRE_SIZE_BYTES:~9,1!"=="" if "x!WINRE_SIZE_BYTES!" GEQ "x1362018305" set "WINRE_TOO_LARGE=1"
+if "!WINRE_TOO_LARGE!"=="1" (
+    call :Log "ERROR: WinRE WIM plus 200 MB buffer requires at least 1500 MB. SizeBytes=!WINRE_SIZE_BYTES!."
+    exit /b 1
+)
+
+set /a WINRE_SIZE_MB=(WINRE_SIZE_BYTES + 1048575) / 1048576
+set /a WINRE_REQUIRED_MB=WINRE_SIZE_MB + 200
+if !WINRE_REQUIRED_MB! GEQ 1500 (
+    call :Log "ERROR: WinRE WIM requires !WINRE_REQUIRED_MB! MB after adding 200 MB; deployment stops at 1500 MB or more."
+    exit /b 1
+)
+if !WINRE_REQUIRED_MB! GEQ 1200 (
+    set "CALCULATED_RECOVERY_SIZE_MB=1500"
+) else (
+    set "CALCULATED_RECOVERY_SIZE_MB=1200"
+)
+
+call :Log "Calculated recovery partition from WinRE WIM: Path=!WINRE_PATH!, SizeMB=!WINRE_SIZE_MB!, RequiredMB=!WINRE_REQUIRED_MB!, RecoverySizeMB=!CALCULATED_RECOVERY_SIZE_MB!."
 exit /b 0
 
 :ValidateTargetDisk

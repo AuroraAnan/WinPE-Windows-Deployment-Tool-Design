@@ -313,6 +313,11 @@ var elapsedTimer = null;
 var lastProgress = 0;
 var lastLogText = "";
 var wimAutoDetected = false;
+var winrePath = "";
+var winreDetected = false;
+var winreSizeBytes = "";
+var winreSizeMb = "";
+var winreStatusText = "";
 
 function byId(id) {
     return document.getElementById(id);
@@ -344,12 +349,17 @@ function DetectEnvironment() {
     return isWinPE;
 }
 
+function environmentModeClassName() {
+    return isWinPE ? "mode mode-winpe" : "mode mode-safe";
+}
+
 function environmentModeText() {
     return isWinPE ? "Environment: WinPE" : "Environment: Windows Safe Mode";
 }
 
 function updateEnvironmentModeInfo() {
     if (byId("modeValue")) {
+        byId("modeValue").className = environmentModeClassName();
         byId("modeValue").innerText = environmentModeText();
     }
 }
@@ -558,6 +568,7 @@ function updateDeployState() {
         envLoaded &&
         disk != "" &&
         diskInventory[disk] &&
+        winreDetected &&
         byId("confirmWim").checked &&
         byId("confirmDisk").checked &&
         byId("confirmRecovery").checked;
@@ -573,7 +584,12 @@ function updateSummary() {
     var diskInfo = getSelectedDiskInfo();
     var diskText = diskInfo.number ? diskInfoText(diskInfo) : "(not selected)";
     var wimText = getEffectiveWimPath();
-    var recoveryText = trimText(byId("recoverySize").value);
+    var winreText = winrePath ? winrePath : "(not detected)";
+    var recoverySummary = winreDetected ? "Calculated by ApplyImage.bat before DiskPart" : "(waiting for WinRE WIM)";
+
+    if (winreDetected) {
+        winreText += " (" + winreSizeBytes + " bytes, " + winreSizeMb + " MB)";
+    }
 
     if (byId("summaryDisk")) {
         byId("summaryDisk").innerText = diskText;
@@ -581,8 +597,14 @@ function updateSummary() {
     if (byId("summaryWim")) {
         byId("summaryWim").innerText = wimText ? wimText : "(not selected)";
     }
+    if (byId("summaryWinre")) {
+        byId("summaryWinre").innerText = winreText;
+    }
     if (byId("summaryRecovery")) {
-        byId("summaryRecovery").innerText = recoveryText ? recoveryText + " MB" : "(not selected)";
+        if (!winreDetected && winreStatusText != "") {
+            recoverySummary = winreStatusText;
+        }
+        byId("summaryRecovery").innerText = recoverySummary;
     }
     updateElapsed();
 }
@@ -593,9 +615,16 @@ function resetConfirmation(confirmId) {
     updateDeployState();
 }
 
+function resetWimAndRecoveryConfirmations() {
+    byId("confirmWim").checked = false;
+    byId("confirmRecovery").checked = false;
+    updateSummary();
+    updateDeployState();
+}
+
 function updateWimCustomState() {
     byId("customWimPath").disabled = wimAutoDetected || byId("wimPath").value != "__CUSTOM__";
-    resetConfirmation("confirmWim");
+    handleWimPathChanged(true);
 }
 
 function clearSelect(selectObj) {
@@ -623,6 +652,109 @@ function mappedDriveInstallWimPath(driveName) {
     return root + "Images\\Install.wim";
 }
 
+function getSiblingWinrePath(wimPath) {
+    var cleanPath = trimText(wimPath);
+    var folder = "";
+    if (cleanPath == "") {
+        return "";
+    }
+    try {
+        folder = fso.GetParentFolderName(cleanPath);
+    } catch (e) {
+        folder = "";
+    }
+    if (folder == "") {
+        return "";
+    }
+    return combinePath(folder, "Winre.wim");
+}
+
+function bytesToMbCeil(sizeBytes) {
+    var bytes = parseFloat(sizeBytes);
+    if (isNaN(bytes) || bytes <= 0) {
+        return "";
+    }
+    return Math.ceil(bytes / 1048576);
+}
+
+function clearWinreDetection(message) {
+    winrePath = "";
+    winreDetected = false;
+    winreSizeBytes = "";
+    winreSizeMb = "";
+    winreStatusText = message ? message : "";
+    if (byId("recoverySize")) {
+        byId("recoverySize").value = "Calculated by ApplyImage.bat";
+    }
+}
+
+function detectWinreForWimPath(wimPath, writeLog) {
+    var candidate = getSiblingWinrePath(wimPath);
+    var file = null;
+    var sizeMb = "";
+
+    clearWinreDetection("");
+    if (candidate == "") {
+        winreStatusText = "WinRE WIM path is pending.";
+        updateSummary();
+        updateDeployState();
+        return false;
+    }
+
+    winrePath = candidate;
+    if (containsApplyImageBadChars(candidate)) {
+        winreStatusText = "WinRE WIM path contains characters ApplyImage.bat does not accept.";
+        if (writeLog) {
+            logMessage(winreStatusText + " " + candidate);
+        }
+        updateSummary();
+        updateDeployState();
+        return false;
+    }
+    if (!fso.FileExists(candidate)) {
+        winreStatusText = "WinRE WIM file does not exist: " + candidate;
+        if (writeLog) {
+            logMessage(winreStatusText);
+        }
+        updateSummary();
+        updateDeployState();
+        return false;
+    }
+
+    file = fso.GetFile(candidate);
+    sizeMb = bytesToMbCeil(file.Size);
+    if (sizeMb === "") {
+        winreStatusText = "WinRE WIM size could not be read.";
+        if (writeLog) {
+            logMessage("ERROR: " + winreStatusText + " Path=" + candidate + ".");
+        }
+        updateSummary();
+        updateDeployState();
+        return false;
+    }
+
+    winreDetected = true;
+    winreSizeBytes = String(file.Size);
+    winreSizeMb = String(sizeMb);
+    winreStatusText = "WinRE WIM detected. Recovery partition size will be calculated by ApplyImage.bat.";
+    byId("recoverySize").value = "BAT calculates from WinRE " + winreSizeMb + " MB";
+    if (writeLog) {
+        logMessage("Detected WinRE WIM: " + candidate + ". SizeBytes=" + winreSizeBytes + ", SizeMB=" + winreSizeMb + ".");
+    }
+    updateSummary();
+    updateDeployState();
+    return true;
+}
+
+function detectWinreForCurrentWim(writeLog) {
+    return detectWinreForWimPath(getEffectiveWimPath(), writeLog);
+}
+
+function handleWimPathChanged(writeLog) {
+    resetWimAndRecoveryConfirmations();
+    detectWinreForCurrentWim(writeLog);
+}
+
 function setWimAutoDetected(path) {
     var selectObj = byId("wimPath");
     wimAutoDetected = true;
@@ -632,7 +764,8 @@ function setWimAutoDetected(path) {
     selectObj.disabled = true;
     byId("customWimPath").value = "";
     byId("customWimPath").disabled = true;
-    resetConfirmation("confirmWim");
+    resetWimAndRecoveryConfirmations();
+    detectWinreForWimPath(path, true);
 }
 
 function setWimManualFallback(message) {
@@ -645,7 +778,8 @@ function setWimManualFallback(message) {
     byId("customWimPath").value = "";
     byId("customWimPath").disabled = false;
     logMessage(message);
-    resetConfirmation("confirmWim");
+    clearWinreDetection("WinRE WIM path is pending.");
+    resetWimAndRecoveryConfirmations();
 }
 
 function detectMappedInstallWim() {
@@ -658,6 +792,7 @@ function detectMappedInstallWim() {
     selectObj.disabled = true;
     byId("customWimPath").value = "";
     byId("customWimPath").disabled = true;
+    clearWinreDetection("WinRE WIM path is pending.");
     updateSummary();
 
     try {
@@ -905,27 +1040,23 @@ function finalConfirm() {
     var disk = trimText(byId("targetDisk").value);
     var diskInfo = getSelectedDiskInfo();
     var wimPath = getEffectiveWimPath();
-    var recoverySize = trimText(byId("recoverySize").value);
     var imageIndex = trimText(byId("imageIndex").value);
     var message = "Final destructive confirmation\r\n\r\n" +
         "The tool will clean Disk " + disk + ".\r\n" +
         "Disk details: " + diskInfo.sizeGb + " | " + diskInfo.model + "\r\n" +
         "WIM path: " + wimPath + "\r\n" +
+        "WinRE WIM path: " + winrePath + "\r\n" +
+        "WinRE WIM size: " + winreSizeBytes + " bytes (" + winreSizeMb + " MB)\r\n" +
         "Image index: " + imageIndex + "\r\n" +
-        "Recovery partition size: " + recoverySize + " MB\r\n\r\n" +
+        "Recovery partition size: calculated by ApplyImage.bat before DiskPart\r\n\r\n" +
         "Continue?";
     return window.confirm(message);
 }
 
 function validateInputs() {
     var wimPath = getEffectiveWimPath();
-    var recoverySize = trimText(byId("recoverySize").value);
     var imageIndex = trimText(byId("imageIndex").value);
 
-    if (!isWinPE) {
-        setStatus(environmentModeText() + ". Deployment is disabled outside WinPE.");
-        return false;
-    }
     if (wimPath == "") {
         setStatus("WIM path is required.");
         return false;
@@ -938,24 +1069,16 @@ function validateInputs() {
         setStatus("WIM file does not exist: " + wimPath);
         return false;
     }
+    if (!detectWinreForCurrentWim(true)) {
+        setStatus(winreStatusText != "" ? winreStatusText : "WinRE WIM detection failed.");
+        return false;
+    }
     if (trimText(byId("targetDisk").value) == "") {
         setStatus("Target disk is required.");
         return false;
     }
     if (!diskInventory[trimText(byId("targetDisk").value)]) {
         setStatus("Target disk must be selected from the scanned fixed disk list.");
-        return false;
-    }
-    if (recoverySize == "") {
-        setStatus("Recovery partition size is required.");
-        return false;
-    }
-    if (!isPositiveInteger(recoverySize)) {
-        setStatus("Recovery partition size must be a positive integer.");
-        return false;
-    }
-    if (parseInt(recoverySize, 10) < 1536) {
-        setStatus("Recovery partition size must be at least 1536 MB.");
         return false;
     }
     if (imageIndex == "") {
@@ -972,8 +1095,10 @@ function validateInputs() {
 function buildParamsText() {
     var text = "";
     text += "WIM_PATH=" + getEffectiveWimPath() + "\r\n";
+    text += "WINRE_PATH=" + winrePath + "\r\n";
+    text += "WINRE_SIZE_BYTES=" + winreSizeBytes + "\r\n";
+    text += "WINRE_SIZE_MB=" + winreSizeMb + "\r\n";
     text += "TARGET_DISK=" + trimText(byId("targetDisk").value) + "\r\n";
-    text += "RECOVERY_SIZE_MB=" + trimText(byId("recoverySize").value) + "\r\n";
     text += "IMAGE_INDEX=" + trimText(byId("imageIndex").value) + "\r\n";
     return text;
 }
@@ -984,6 +1109,8 @@ function writeParams() {
     ensureFolder(fso.GetParentFolderName(paramsPath));
     writeTextFile(paramsPath, text);
     logMessage("Selected target disk: Disk " + diskInfo.number + " | " + diskInfo.sizeGb + " | " + diskInfo.model);
+    logMessage("Selected WinRE WIM: " + winrePath + ". SizeBytes=" + winreSizeBytes + ", SizeMB=" + winreSizeMb + ".");
+    logMessage("Recovery partition size will be calculated by ApplyImage.bat before DiskPart.");
     logMessage("Wrote selected_params.ini to " + paramsPath);
 }
 
@@ -1328,7 +1455,8 @@ function init() {
     byId("wimPath").disabled = true;
     byId("customWimPath").value = "";
     byId("customWimPath").disabled = true;
-    byId("recoverySize").value = "1536";
+    byId("recoverySize").value = "";
+    clearWinreDetection("WinRE WIM path is pending.");
     byId("imageIndex").value = "1";
     updateProgress(0, "READY - Waiting for deployment parameters.", "");
 
@@ -1364,11 +1492,12 @@ function init() {
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
             ensureFolder(applyDetailPath);
             logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
-            logMessage("Detected environment: " + environmentModeText() + ".");
+            logMessage(environmentModeText() + ".");
             var mappedWimFound = detectMappedInstallWim();
             if (refreshTargetDisks()) {
                 if (isWinPE) {
-                    setStatus(startupDiskStatus(mappedWimFound ? "Ready. WIM auto-detected." : "Ready. Enter custom WIM path."));
+                    var imageStatus = mappedWimFound ? (winreDetected ? "Ready. WIM and WinRE auto-detected." : winreStatusText) : "Ready. Enter custom WIM path.";
+                    setStatus(startupDiskStatus(imageStatus));
                 } else {
                     setStatus(environmentModeText() + ". Deployment is disabled outside WinPE.");
                 }
@@ -1411,7 +1540,7 @@ function init() {
                 <div class="cell">
                     <div class="row">
                         <label for="customWimPath">Custom WIM file</label>
-                        <input class="text" type="text" id="customWimPath" onchange="resetConfirmation('confirmWim')" onkeyup="resetConfirmation('confirmWim')" />
+                        <input class="text" type="text" id="customWimPath" onchange="handleWimPathChanged(true)" onkeyup="handleWimPathChanged(false)" />
                     </div>
                 </div>
             </div>
@@ -1428,12 +1557,7 @@ function init() {
                 <div class="cell">
                     <div class="row">
                         <label for="recoverySize">Recovery partition</label>
-                        <select id="recoverySize" onchange="resetConfirmation('confirmRecovery')">
-                            <option value="1536">1536 MB</option>
-                            <option value="2048">2048 MB</option>
-                            <option value="3072">3072 MB</option>
-                            <option value="4096">4096 MB</option>
-                        </select>
+                        <input class="text" type="text" id="recoverySize" readonly />
                     </div>
                 </div>
             </div>
@@ -1454,6 +1578,10 @@ function init() {
                     <div class="summary-value" id="summaryWim">(not selected)</div>
                 </div>
                 <div class="summary-row">
+                    <div class="summary-name">WinRE WIM</div>
+                    <div class="summary-value" id="summaryWinre">(not detected)</div>
+                </div>
+                <div class="summary-row">
                     <div class="summary-name">Target disk</div>
                     <div class="summary-value" id="summaryDisk">(not selected)</div>
                 </div>
@@ -1471,7 +1599,7 @@ function init() {
                 <div class="section-title danger">Required confirmations</div>
                 <label><input type="checkbox" id="confirmWim" onclick="updateDeployState()" /> WIM path confirmed</label>
                 <label><input type="checkbox" id="confirmDisk" onclick="updateDeployState()" /> Target disk clean confirmed</label>
-                <label><input type="checkbox" id="confirmRecovery" onclick="updateDeployState()" /> Recovery partition size confirmed</label>
+                <label><input type="checkbox" id="confirmRecovery" onclick="updateDeployState()" /> WinRE WIM file confirmed</label>
             </div>
 
             <div class="button-row">
