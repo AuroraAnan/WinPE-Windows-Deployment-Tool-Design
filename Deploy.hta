@@ -94,6 +94,25 @@ h1 {
     font-size: 20px;
     font-weight: 600;
 }
+.mode {
+    position: absolute;
+    right: 28px;
+    top: 20px;
+    height: 42px;
+    line-height: 42px;
+    padding: 0 22px;
+    border-radius: 6px;
+    font-size: 15px;
+    font-weight: 600;
+}
+.mode-safe {
+    background-color: #e9329d; 
+    color: #f7e5f3; 
+}
+.mode-winpe {
+    background-color: #36df76;
+    color: #DCFCE7;
+}
 .subtle {
     color: #53616f;
     margin-top: 3px;
@@ -273,6 +292,7 @@ button:disabled {
 var fso = new ActiveXObject("Scripting.FileSystemObject");
 var shell = new ActiveXObject("WScript.Shell");
 var deployEnv = {};
+var isWinPE = false;
 var envLoaded = false;
 var htaDir = "";
 var htaLogPath = "";
@@ -292,6 +312,7 @@ var pollTimer = null;
 var elapsedTimer = null;
 var lastProgress = 0;
 var lastLogText = "";
+var wimAutoDetected = false;
 
 function byId(id) {
     return document.getElementById(id);
@@ -300,6 +321,36 @@ function byId(id) {
 function setStatus(message) {
     if (byId("statusBox")) {
         byId("statusBox").innerText = message;
+    }
+}
+
+function DetectEnvironment() {
+    var systemDrive = "";
+    var hasWinPEFolder = false;
+
+    try {
+        systemDrive = shell.ExpandEnvironmentStrings("%SystemDrive%");
+    } catch (e) {
+        systemDrive = "";
+    }
+
+    try {
+        hasWinPEFolder = fso.FolderExists("X:\\Windows\\System32");
+    } catch (e) {
+        hasWinPEFolder = false;
+    }
+
+    isWinPE = (trimText(systemDrive).toUpperCase() == "X:" && hasWinPEFolder);
+    return isWinPE;
+}
+
+function environmentModeText() {
+    return isWinPE ? "Environment: WinPE" : "Environment: Windows Safe Mode";
+}
+
+function updateEnvironmentModeInfo() {
+    if (byId("modeValue")) {
+        byId("modeValue").innerText = environmentModeText();
     }
 }
 
@@ -503,7 +554,8 @@ function handleWindowUnload() {
 
 function updateDeployState() {
     var disk = trimText(byId("targetDisk").value);
-    var ready = envLoaded &&
+    var ready = isWinPE &&
+        envLoaded &&
         disk != "" &&
         diskInventory[disk] &&
         byId("confirmWim").checked &&
@@ -542,7 +594,7 @@ function resetConfirmation(confirmId) {
 }
 
 function updateWimCustomState() {
-    byId("customWimPath").disabled = byId("wimPath").value != "__CUSTOM__";
+    byId("customWimPath").disabled = wimAutoDetected || byId("wimPath").value != "__CUSTOM__";
     resetConfirmation("confirmWim");
 }
 
@@ -558,6 +610,85 @@ function addOption(selectObj, value, text) {
     option.text = text;
     selectObj.add(option);
     return option;
+}
+
+function mappedDriveInstallWimPath(driveName) {
+    var root = trimText(driveName);
+    if (root == "") {
+        return "";
+    }
+    if (root.charAt(root.length - 1) != "\\") {
+        root += "\\";
+    }
+    return root + "Images\\Install.wim";
+}
+
+function setWimAutoDetected(path) {
+    var selectObj = byId("wimPath");
+    wimAutoDetected = true;
+    clearSelect(selectObj);
+    addOption(selectObj, path, path);
+    selectObj.value = path;
+    selectObj.disabled = true;
+    byId("customWimPath").value = "";
+    byId("customWimPath").disabled = true;
+    resetConfirmation("confirmWim");
+}
+
+function setWimManualFallback(message) {
+    var selectObj = byId("wimPath");
+    wimAutoDetected = false;
+    clearSelect(selectObj);
+    addOption(selectObj, "__CUSTOM__", "Other/custom path");
+    selectObj.value = "__CUSTOM__";
+    selectObj.disabled = true;
+    byId("customWimPath").value = "";
+    byId("customWimPath").disabled = false;
+    logMessage(message);
+    resetConfirmation("confirmWim");
+}
+
+function detectMappedInstallWim() {
+    var selectObj = byId("wimPath");
+    var mappedCount = 0;
+    wimAutoDetected = false;
+    clearSelect(selectObj);
+    addOption(selectObj, "", "Scanning mapped network drives...");
+    selectObj.value = "";
+    selectObj.disabled = true;
+    byId("customWimPath").value = "";
+    byId("customWimPath").disabled = true;
+    updateSummary();
+
+    try {
+        var network = new ActiveXObject("WScript.Network");
+        var drives = network.EnumNetworkDrives();
+        for (var i = 0; i < drives.Count(); i += 2) {
+            var driveName = trimText(drives.Item(i));
+            var remotePath = safeText(drives.Item(i + 1));
+            var candidate = mappedDriveInstallWimPath(driveName);
+            if (candidate == "") {
+                continue;
+            }
+            mappedCount++;
+            logMessage("Checking mapped WIM candidate: " + candidate + " from " + remotePath);
+            if (fso.FileExists(candidate)) {
+                setWimAutoDetected(candidate);
+                logMessage("Auto-detected mapped WIM file: " + candidate);
+                return true;
+            }
+        }
+    } catch (e) {
+        setWimManualFallback("Mapped network drive WIM scan failed: " + e.message + ". Custom WIM path enabled.");
+        return false;
+    }
+
+    if (mappedCount == 0) {
+        setWimManualFallback("No mapped network drives found. Custom WIM path enabled.");
+    } else {
+        setWimManualFallback("No mapped network drive contains \\Images\\Install.wim. Custom WIM path enabled.");
+    }
+    return false;
 }
 
 function safeText(value) {
@@ -791,6 +922,10 @@ function validateInputs() {
     var recoverySize = trimText(byId("recoverySize").value);
     var imageIndex = trimText(byId("imageIndex").value);
 
+    if (!isWinPE) {
+        setStatus(environmentModeText() + ". Deployment is disabled outside WinPE.");
+        return false;
+    }
     if (wimPath == "") {
         setStatus("WIM path is required.");
         return false;
@@ -1089,6 +1224,13 @@ function completeDeployment(rc) {
 function startDeployment() {
     var rc = 30;
     try {
+        if (!isWinPE) {
+            logMessage("Deployment start blocked: " + environmentModeText() + ".");
+            setStatus(environmentModeText() + ". Deployment is disabled outside WinPE.");
+            writeExitCode(30, true);
+            updateDeployState();
+            return;
+        }
         if (!envLoaded) {
             setStatus("DeployEnv.cmd is not available. Deployment cannot start.");
             writeExitCode(30, true);
@@ -1179,11 +1321,15 @@ function openCommandLine() {
 }
 
 function init() {
-    byId("wimPath").value = "Z:\\Images\\Install.wim";
+    DetectEnvironment();
+    updateEnvironmentModeInfo();
+    clearSelect(byId("wimPath"));
+    addOption(byId("wimPath"), "", "Waiting for mapped drive scan...");
+    byId("wimPath").disabled = true;
     byId("customWimPath").value = "";
+    byId("customWimPath").disabled = true;
     byId("recoverySize").value = "1536";
     byId("imageIndex").value = "1";
-    updateWimCustomState();
     updateProgress(0, "READY - Waiting for deployment parameters.", "");
 
     try {
@@ -1218,8 +1364,14 @@ function init() {
             ensureFolder(combinePath(combinePath(deployEnv.LOGDIR, "details"), "10_deploy_hta"));
             ensureFolder(applyDetailPath);
             logMessage("Deploy.hta initialized. RUNID=" + (deployEnv.RUNID ? deployEnv.RUNID : ""));
+            logMessage("Detected environment: " + environmentModeText() + ".");
+            var mappedWimFound = detectMappedInstallWim();
             if (refreshTargetDisks()) {
-                setStatus(startupDiskStatus("Ready."));
+                if (isWinPE) {
+                    setStatus(startupDiskStatus(mappedWimFound ? "Ready. WIM auto-detected." : "Ready. Enter custom WIM path."));
+                } else {
+                    setStatus(environmentModeText() + ". Deployment is disabled outside WinPE.");
+                }
             }
         } catch (e) {
             envLoaded = false;
@@ -1242,6 +1394,7 @@ function init() {
         <div class="panel left-panel">
             <div class="title-row">
                 <h1>WinOS Deployment Tool</h1>
+                <div class="mode mode-safe"><span id="modeValue">Environment: Detecting...</span></div>
                 <div class="subtle">RunID: <span id="runIdValue">(not loaded)</span></div>
                 <div class="subtle">LOGDIR: <span id="logDirValue">(not loaded)</span></div>
             </div>
@@ -1251,9 +1404,7 @@ function init() {
                     <div class="row">
                         <label for="wimPath">Target WIM file</label>
                         <select id="wimPath" onchange="updateWimCustomState()">
-                            <option value="Z:\Images\Install.wim">Z:\Images\Install.wim</option>
-                            <option value="Z:\Images\install.wim">Z:\Images\install.wim</option>
-                            <option value="__CUSTOM__">Other/custom path</option>
+                            <option value="">Waiting for mapped drive scan...</option>
                         </select>
                     </div>
                 </div>
